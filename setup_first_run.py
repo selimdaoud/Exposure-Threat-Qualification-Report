@@ -249,6 +249,15 @@ def step_sample_report(nvd_key: str | None) -> None:
 
     customer = ask_value("Organisation name for the report", default="My Organisation")
 
+    mock = ask(
+        "Use mock mode? (fast, no network — good for testing the report layout)",
+        default=False,
+    )
+    if mock:
+        info("Mock mode: synthetic data will be used. Do not use for real patching decisions.")
+    else:
+        info("Live mode: will query NVD, KEV, EPSS, and Oracle CPU advisories.")
+
     venv_python = ROOT / ".venv" / "bin" / "python3"
     py = str(venv_python) if venv_python.exists() else python()
     env = {"NVD_API_KEY": nvd_key} if nvd_key else {}
@@ -260,6 +269,8 @@ def step_sample_report(nvd_key: str | None) -> None:
         "--html", "report.html",
         "--json", "findings.json",
     ]
+    if mock:
+        cmd.append("--mock")
 
     if run(cmd, env=env):
         report = ROOT / "REPORT" / "report.html"
