@@ -1,0 +1,16 @@
+data/cache/
+REPORT/
+.env
+*.log
+__pycache__/
+*.py[cod]
+*.egg-info/
+report.txt
+findings.json
+report.html
+installed-report.txt
+installed-findings.json
+installed-report.html
+offline-report.txt
+offline-findings.json
+offline-report.html

@@ -1,0 +1,552 @@
+Oracle CVE Threat Enrichment Engine - Manuel d'utilisation
+===========================================================
+
+Objectif
+--------
+
+Cet engine analyse une liste de produits Oracle et versions, mappe les CVE
+applicables, enrichit les CVE avec des signaux de risque, puis genere des
+rapports JSON et HTML dans le repertoire REPORT/.
+
+Le rapport HTML est autonome: il peut etre ouvert directement dans un navigateur
+et contient la recherche, les filtres, les sections CVE expandables, les
+techniques ATT&CK, les regles de detection, les references de patch et les
+references d'evidence.
+
+
+Installation initiale
+---------------------
+
+Cette section couvre la mise en place complete depuis zero.
+
+Script de premier demarrage (recommande)
+
+  Un script interactif guide est fourni pour la premiere installation. Il
+  verifie les prerequis, cree l'environnement virtuel, installe les dependances
+  et initialise optionnellement le catalogue produits et l'index de detection :
+
+    python3 setup_first_run.py
+
+  Le script demande confirmation avant chaque action et peut etre interrompu
+  et relance sans risque. Les etapes ci-dessous decrivent le meme processus
+  manuellement.
+
+1. Prerequis systeme
+
+   Les elements suivants doivent etre disponibles avant de lancer l'engine :
+
+   a. Python 3.10 ou superieur
+
+        python3 --version
+
+   b. git (requis pour construire l'index de detection optionnel)
+
+        git --version
+
+      Installer depuis https://git-scm.com si absent.
+
+   c. Acces internet (pour NVD, CISA KEV, EPSS et les advisories Oracle CPU)
+
+   d. ~500 Mo d'espace disque libre (uniquement si construction de l'index de
+      detection)
+
+2. Environnement virtuel (recommande)
+
+     cd v1
+     python3 -m venv .venv
+     source .venv/bin/activate        # Linux / macOS
+     .venv\Scripts\activate           # Windows
+
+3. Installation des dependances
+
+     python3 -m pip install -r requirements.txt
+
+4. Cle API NVD (optionnel mais recommande)
+
+   Obtenir une cle gratuite sur : https://nvd.nist.gov/developers/request-an-api-key
+
+     export NVD_API_KEY=<votre_cle>
+
+   Sans cle, l'engine fonctionne mais les appels NVD sont plus lents et limites.
+
+5. Initialisation du catalogue produits
+
+     python3 -m oracle_cve_intel.cli update-aliases
+
+   A executer une fois, puis periodiquement pour couvrir les nouveaux produits
+   Oracle.
+
+6. Construction de l'index de detection (optionnel)
+
+     python3 -m oracle_cve_intel.cli detection-index --refresh --rebuild
+
+   Cette etape prend quelques minutes. Elle permet d'obtenir des resultats de
+   detection dans les rapports. Sans cet index, l'analyse continue mais sans
+   couverture de detection.
+
+7. Premier rapport
+
+     python3 -m oracle_cve_intel.cli analyze \
+       --input examples/products.csv \
+       --customer "Nom Organisation" \
+       --html report.html
+
+   Ouvrir REPORT/report.html dans un navigateur.
+
+
+Format du fichier d'entree
+--------------------------
+
+Le fichier CSV doit contenir au minimum les colonnes product_name et version.
+
+Colonnes obligatoires:
+
+  product_name   Nom du produit Oracle (ex: "Oracle WebLogic Server")
+  version        Version installee (ex: "12.2.1.4", "19.3", "8u351")
+  machine_id     Identifiant de la machine ou du groupe de machines
+  notes          Note libre (ex: "Internet-facing", "core database")
+
+Colonnes optionnelles:
+
+  owner          Proprietaire ou equipe responsable
+  criticality    Niveau de criticite metier (ex: "high", "critical")
+
+Exemple minimal:
+
+  product_name,version,machine_id,notes
+  Oracle WebLogic Server,12.2.1.4,web001,Internet-facing
+  Oracle Database Server,19.3,db001,core database
+
+Exemple complet:
+
+  product_name,version,machine_id,notes,owner,criticality
+  Oracle WebLogic Server,12.2.1.4,web001,Internet-facing,platform,high
+  Oracle Database Server,19.3,db001,core database,dba,critical
+  Oracle E-Business Suite,12.2.10,ebs001,ERP production,finance,critical
+
+Les fichiers d'exemple sont disponibles dans:
+
+  examples/products.csv
+  examples/products3.csv
+
+
+Commande principale
+-------------------
+
+Lancer une analyse complete avec generation des deux formats de rapport:
+
+  python3 -m oracle_cve_intel.cli analyze \
+    --input examples/products.csv \
+    --customer "Nom Organisation"
+
+Le flag --customer est optionnel. S'il est omis, le rapport affiche
+UNKNOWN_ORG comme nom d'organisation.
+
+Sans option de format, l'engine genere par defaut JSON et HTML:
+
+  REPORT/findings.json
+  REPORT/report.html
+  REPORT/report.log
+
+Pour choisir explicitement les noms des fichiers:
+
+  python3 -m oracle_cve_intel.cli analyze \
+    --input examples/products.csv \
+    --customer "Nom Organisation" \
+    --json findings.json \
+    --html report.html
+
+Les fichiers sont automatiquement crees dans REPORT/:
+
+  REPORT/findings.json
+  REPORT/report.html
+  REPORT/report.log
+
+
+Progression visible
+-------------------
+
+Pendant l'execution, l'utilisateur voit l'etape courante:
+
+  [input     ] Reading examples/products.csv ...
+  [normalize ] Normalizing product names ...
+  [map       ] Mapping products to CVEs (Oracle CPU + NVD) ...
+  [enrich    ] Enriching CVEs with CVSS / KEV / EPSS ...
+  [threat    ] Fetching threat context ...
+  [detect    ] Looking up detection rules in local DB ...
+  [prioritize] Computing finding priorities ...
+  [report    ] Writing HTML report to REPORT/report.html ...
+  [done      ] Run complete. Log written to REPORT/report.log.
+
+Pour les produits dont NVD retourne uniquement des CPE generiques (sans plage
+de version specifique), le moteur effectue un scan supplementaire des advisories
+Oracle CPU. La progression indique alors :
+
+  [map       ] [2/3] Oracle advisory confirmed 36 CVEs for Oracle Database 19.3
+               (January 2017 – April 2026).
+
+Si la version n'apparait dans aucun advisory de la periode (produit potentiellement
+hors support), un avertissement est emis et un finding informatif est cree :
+
+  [map       ] WARN - Oracle E-Business Suite 12.1: scanned 26 Oracle CPU
+               advisories (January 2017 – April 2026), 0 CVEs confirmed for this
+               version. This product/version may not be covered by recent Oracle
+               security patches.
+
+
+Enrichissement du catalogue produits
+-------------------------------------
+
+Par defaut, le moteur s'appuie sur les fichiers data/product_aliases.json et
+data/cpe_map.json pour normaliser les noms de produits. Ces fichiers couvrent
+les produits Oracle courants.
+
+Pour enrichir automatiquement ces catalogues depuis le dictionnaire CPE de NVD
+(tous les produits Oracle connus de NVD) :
+
+  python3 -m oracle_cve_intel.cli update-aliases
+
+Cette commande :
+
+  - Interroge NVD pour tous les produits Oracle (cpe:2.3:a:oracle:*)
+  - Ajoute les nouveaux produits dans data/cpe_map.json
+  - Genere automatiquement les alias sans prefixe "Oracle " (ex: "WebLogic
+    Server" -> "Oracle WebLogic Server")
+  - Preserve toutes les entrees existantes
+  - Cache le resultat (TTL 7 jours)
+
+Pour voir ce qui serait ajoute sans modifier les fichiers :
+
+  python3 -m oracle_cve_intel.cli update-aliases --dry-run
+
+En mode hors-ligne (utilise le cache NVD existant) :
+
+  python3 -m oracle_cve_intel.cli update-aliases --offline
+
+Workflow recommande : executer update-aliases une fois avant la premiere analyse,
+puis periodiquement pour couvrir les nouveaux produits Oracle.
+
+Normalisation des noms de produits
+-----------------------------------
+
+Lors de l'analyse, le moteur normalise chaque nom de produit en trois etapes :
+
+  1. Correspondance exacte dans product_aliases.json (confiance HIGH)
+  2. Correspondance floue par tokens si etape 1 echoue (confiance MEDIUM)
+     Exemple : "WebLogic Server" -> "Oracle WebLogic Server"
+  3. Aucun match : le nom brut est conserve (confiance LOW)
+
+La confiance de normalisation est visible dans le rapport (champ "Mapping
+Confidence"). Un produit en LOW confidence n'a pas de prefixe CPE connu et ne
+peut pas etre mappe aux CVE NVD.
+
+
+Scan Oracle CPU Advisory
+------------------------
+
+Pour les produits dont NVD ne dispose pas de plages de version specifiques
+(CPE generiques, ex: Oracle E-Business Suite), le moteur consulte directement
+les advisories Oracle CPU trimestriels (janvier, avril, juillet, octobre) depuis
+2017 jusqu'a la date courante.
+
+Pour chaque advisory, il identifie la section produit correspondante
+(ex: "Oracle E-Business Suite Risk Matrix") et verifie si la version installee
+entre dans la plage affectee declaree par Oracle.
+
+Trois cas de figure :
+
+  1. Des CVE sont confirmees pour la version installee :
+     Elles apparaissent dans le rapport avec le statut CONFIRMED_AFFECTED et un
+     lien direct vers l'advisory Oracle CPU qui les mentionne.
+
+  2. Des CVE NVD generiques existent mais ne sont pas confirmees par l'advisory :
+     Elles restent dans la section "NVD wildcard" du rapport (non confirmees).
+
+  3. Aucune CVE n'est confirmee ET toutes les CVE NVD sont generiques :
+     Un finding informatif est cree avec le message d'avertissement ci-dessus.
+     Cela indique que la version n'apparait dans aucun advisory Oracle de la
+     periode, probablement parce qu'elle est hors support Oracle.
+
+Les advisories sont mis en cache localement apres le premier acces. Les relances
+ulterieures utilisent le cache et sont tres rapides.
+
+
+Index local des regles de detection
+-----------------------------------
+
+Par defaut, l'analyse utilise une base locale SQLite pour chercher les regles de
+detection. Elle ne clone pas et ne scanne pas les repositories de regles pendant
+une analyse normale.
+
+Pour creer ou mettre a jour cette base locale:
+
+  python3 -m oracle_cve_intel.cli detection-index --refresh --rebuild
+
+Cette commande peut prendre du temps car elle clone ou met a jour les sources de
+regles, puis construit l'index local:
+
+  data/cache/detection_rules.sqlite
+
+Pour reconstruire l'index uniquement depuis les repositories deja presents en
+local, sans reseau:
+
+  python3 -m oracle_cve_intel.cli detection-index --offline --rebuild
+
+Pendant l'indexation, l'utilisateur voit la progression:
+
+  [detect    ] Indexing SigmaHQ rules ...
+  [detect    ] Indexed 500 searchable rules from 546 scanned files.
+  [detect    ] Indexing Elastic rules ...
+  [detect    ] Detection index complete: 12003 searchable rules from 26540 scanned files.
+
+
+Analyse avec detection
+----------------------
+
+Une fois l'index local cree, la commande d'analyse standard utilise la DB de
+detection automatiquement:
+
+  python3 -m oracle_cve_intel.cli analyze \
+    --input examples/products.csv \
+    --json findings.json \
+    --html report.html
+
+Si la DB locale n'existe pas, l'analyse continue et affiche un warning:
+
+  [detect    ] Local detection DB not found. Run `detection-index --refresh` to enable detection mapping.
+
+
+Analyse sans detection
+----------------------
+
+Pour produire un rapport rapidement sans lookup de detection:
+
+  python3 -m oracle_cve_intel.cli analyze \
+    --input examples/products.csv \
+    --json findings.json \
+    --html report.html \
+    --skip-detection
+
+
+Mode offline
+------------
+
+Le mode offline evite les appels reseau pour les providers qui peuvent utiliser
+le cache local:
+
+  python3 -m oracle_cve_intel.cli analyze \
+    --input examples/products.csv \
+    --json findings.json \
+    --html report.html \
+    --offline
+
+Note: si les donnees NVD, KEV ou EPSS ne sont pas deja en cache, les resultats
+peuvent etre incomplets.
+
+
+Mode mock
+---------
+
+Le mode mock sert aux demonstrations ou tests rapides sans donnees live:
+
+  python3 -m oracle_cve_intel.cli analyze \
+    --input examples/products.csv \
+    --json findings.json \
+    --html report.html \
+    --mock
+
+Les rapports en mode mock ne doivent pas etre utilises pour une decision de
+patching reelle.
+
+
+Filtrage par severite
+---------------------
+
+Afficher uniquement les CVE a partir d'une severite minimale:
+
+  python3 -m oracle_cve_intel.cli analyze \
+    --input examples/products.csv \
+    --json findings.json \
+    --html report.html \
+    --min-severity high
+
+Valeurs possibles:
+
+  low
+  medium
+  high
+  critical
+
+
+Inclure les mappings incertains
+-------------------------------
+
+Par defaut, les CVE avec version insuffisante ou uniquement confirmees par CPE
+generique NVD sont separees du rapport principal. Pour les inclure:
+
+  python3 -m oracle_cve_intel.cli analyze \
+    --input examples/products.csv \
+    --json findings.json \
+    --html report.html \
+    --include-unconfirmed
+
+
+Rapport HTML
+------------
+
+Ouvrir le fichier suivant dans un navigateur:
+
+  REPORT/report.html
+
+Fonctionnalites:
+
+  - Recherche texte
+  - Filtres par priorite, severite, KEV, exploit public et coverage detection
+  - Sections CVE expandables
+  - Sous-sections expandables:
+      ATT&CK Techniques
+      Detection Rules
+      Patch References
+      Evidence References
+  - Liens directs vers les references externes
+  - Section separee pour les produits sans CVE confirmee (NVD wildcard ou
+    version hors support Oracle)
+
+
+Interpretation des signaux
+--------------------------
+
+KEV:
+  La CVE est presente dans le catalogue CISA Known Exploited Vulnerabilities.
+
+EPSS:
+  Score probabiliste FIRST EPSS indiquant la probabilite d'exploitation observee.
+
+Public exploit:
+  Signal derive de references publiques, du statut KEV, ou d'evidence indiquee
+  dans les sources enrichies.
+
+ATT&CK Techniques:
+  Techniques MITRE ATT&CK associees par contexte menace ou inference.
+
+Detection Rules:
+  Regles trouvees dans la DB locale de detection, par CVE direct ou par technique
+  ATT&CK associee.
+
+Patch References:
+  Advisory Oracle CPU specifique a la CVE, extrait automatiquement des
+  references NVD ou du scan direct des advisories Oracle CPU. Chaque carte
+  affiche :
+
+    Source         : lien cliquable vers l'advisory Oracle CPU specifique
+                     (ex: Oracle CPU January 2025), pas la page generique.
+    Product        : nom normalise du produit concerne.
+    Affected versions : version du produit dans le fichier d'entree.
+    Affected component : composant interne affecte si disponible dans l'advisory
+                         (ex: "Core", "SQL Engine").
+    Fixed version  : indique "not specified" si non disponible publiquement.
+                     La version corrigee exacte necessite My Oracle Support.
+    Patch ID       : indique "not specified" si non disponible publiquement.
+                     L'identifiant exact du bundle de patch necessite MOS.
+    Notes          : advisory de reference et indication d'acces MOS si besoin.
+
+Evidence References:
+  Liens vers NVD, CISA KEV, advisories et autres sources utilisees pour justifier
+  le finding.
+
+
+Workflow recommande
+-------------------
+
+1. Enrichir le catalogue produits (une fois, puis periodiquement) :
+
+     python3 -m oracle_cve_intel.cli update-aliases
+
+2. Mettre a jour l'index detection periodiquement :
+
+     python3 -m oracle_cve_intel.cli detection-index --refresh --rebuild
+
+3. Lancer l'analyse standard:
+
+     python3 -m oracle_cve_intel.cli analyze \
+       --input examples/products.csv \
+       --customer "Nom Organisation" \
+       --json findings.json \
+       --html report.html
+
+4. Ouvrir:
+
+     REPORT/report.html
+
+5. Prioriser en premier:
+
+     - Critical
+     - KEV = true
+     - Public exploit = true
+     - EPSS eleve
+     - Assets production / internet-facing / high criticality
+
+
+Troubleshooting
+---------------
+
+Un produit n'est pas reconnu (confiance LOW, aucun CVE trouve) :
+  Verifier que le produit est present dans data/cpe_map.json. Si absent :
+
+    python3 -m oracle_cve_intel.cli update-aliases
+
+  Si le produit existe dans NVD mais sous un nom different, ajouter un alias
+  manuel dans data/product_aliases.json :
+
+    "Mon Alias Interne": "Nom Canonique Oracle"
+
+La detection est vide:
+  Verifier que l'index existe:
+
+    data/cache/detection_rules.sqlite
+
+  Sinon lancer:
+
+    python3 -m oracle_cve_intel.cli detection-index --refresh --rebuild
+
+L'analyse est lente:
+  La premiere execution scanne jusqu'a 38 advisories Oracle CPU (2017-present)
+  pour les produits avec CPE generiques. Ces pages sont ensuite mises en cache.
+  Les relances ulterieures utilisent le cache et sont rapides. Pour une
+  execution rapide sans scan advisory:
+
+    python3 -m oracle_cve_intel.cli analyze \
+      --input examples/products.csv \
+      --json findings.json \
+      --html report.html \
+      --skip-detection
+
+Le rapport n'apparait pas:
+  Les rapports sont crees dans REPORT/ meme si le nom passe en argument est
+  simple, par exemple report.html devient REPORT/report.html.
+
+Les donnees semblent incompletes:
+  Relancer sans --offline, verifier la connectivite reseau, et configurer
+  NVD_API_KEY si possible.
+
+Les Patch References affichent un advisory generique au lieu d'un lien specifique:
+  Les references NVD pour cette CVE ne contiennent pas de lien oracle.com/
+  security-alerts/cpu*. C'est normal pour des CVE tierces (Apache, OpenSSL,
+  etc.) qui affectent des produits Oracle par dependance — l'advisory specifique
+  Oracle n'existe pas toujours. Dans ce cas, se referer a l'advisory du
+  composant tiers directement via les Evidence References.
+
+Le rapport affiche "0 CVEs confirmed" pour un produit avec finding informatif:
+  La version installee n'apparait dans aucun des advisories Oracle CPU de la
+  periode 2017-present. Causes possibles :
+    - Le produit/version est hors support Oracle (fin de support premier ou
+      etendu) et n'est plus couvert par les CPU trimestriels.
+    - La version est trop recente pour figurer dans les advisories deja publies.
+  Action recommandee : verifier le statut de support Oracle pour ce produit et
+  migrer vers une version supportee si applicable.
+
+Une colonne du CSV n'est pas reconnue :
+  Seules product_name et version sont obligatoires. Les colonnes machine_id,
+  notes, owner et criticality sont optionnelles. Toute autre colonne est ignoree
+  silencieusement. La colonne "environment" n'est pas supportee — utiliser
+  "notes" pour les informations d'environnement.

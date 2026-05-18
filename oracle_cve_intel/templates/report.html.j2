@@ -1,0 +1,1710 @@
+{#
+  Oracle CVE Threat Enrichment Report — Jinja2 Template
+  ======================================================
+
+  CONTEXT VARIABLES
+  -----------------
+  generated_at      str         Timestamp de génération ("2025-01-15 14:30 UTC")
+  report_mode       str         "Live provider report" | "Mock provider report"
+  mock_providers    list[str]   Noms des providers mockés (vide si live)
+
+  total_findings    int         Nombre total de findings
+  counts            dict        {"critical": int, "high": int, "medium": int, "low": int}
+  covered           int         Findings avec couverture de détection
+  gaps              int         Findings sans couverture (detection gap)
+  detection_skipped bool        True si --skip-detection a été utilisé
+  highest_summary   str|None    Résumé du finding le plus critique
+
+  products_summary  list[dict]  Un dict par machine, contenant :
+    .machine_id     str         Identifiant machine (ex: machine_001)
+    .total          int         Nombre total de findings pour cette machine
+    .priority_counts dict       {"critical": int, …}
+    .products       list[dict]  Un dict par produit, contenant :
+      .name           str         Nom normalisé du produit
+      .version        str         Version brute
+      .criticality    str         Criticité (high, medium, …)
+      .meta           str         "version · criticality"
+      .priority_counts dict       {"critical": int, …}
+      .total          int         Nombre de findings pour ce produit
+      .findings       list[dict]  Enriched finding contexts (fc) :
+      .finding      FindingRecord   Objet finding complet
+      .product      str             Nom produit normalisé
+      .techniques   list            ATT&CK techniques
+      .rules        list            Règles de détection
+      .patches      list            Patch references
+      .evidence_primary   list      6 premières références triées
+      .evidence_overflow  list      Références supplémentaires
+      .detection_state    str       "covered" | "gap" | "skipped"
+      .detection_label    str       Label lisible
+      .search_text        str       Texte pré-calculé pour la recherche client
+
+  threat_summary    dict        {"public_exploit": int, "active": int, "techniques": str}
+  warnings          list[str]   Avertissements du run
+  warnings_count    int
+  errors_count      int
+  provider_mode     str         "live" | "mock (…)"
+
+  wildcard_findings list[FindingRecord]  CVEs NVD wildcard (non confirmés)
+  other_suppressed_count int             Autres findings supprimés
+
+  MODIFIER CE FICHIER
+  -------------------
+  - CSS  : section <style> — variables CSS dans :root, puis règles par composant
+  - JS   : section <script> — logique de filtrage client-side
+  - HTML : macros Jinja2 en haut, structure principale en bas
+  - Pas d'échappement Python {{}} nécessaire ici — c'est du vrai CSS/HTML/JS
+#}
+
+{# ─────────────────────────────────────────────
+   MACROS — bibliothèque de composants
+   ───────────────────────────────────────────── #}
+
+{% macro metric(label, value) %}
+<div class="metric">
+  <div class="label">{{ label }}</div>
+  <div class="value">{{ value }}</div>
+</div>
+{% endmacro %}
+
+{% macro detail_cell(label, value) %}
+<div class="detail">
+  <div class="k">{{ label }}</div>
+  <div class="v">{{ value }}</div>
+</div>
+{% endmacro %}
+
+{% macro reference_anchor(ref) %}
+{% set label = ref.label ~ (" · " ~ ref.source if ref.source else "") %}
+<a class="link-pill" href="{{ ref.url }}" target="_blank" rel="noopener noreferrer">{{ label }}</a>
+{% endmacro %}
+
+{% macro technique_anchor(tech) %}
+<a class="link-pill" href="{{ tech.url }}" target="_blank" rel="noopener noreferrer">
+  {{ tech.technique_id }} {{ tech.name }} · {{ tech.confidence.value }}
+</a>
+{% endmacro %}
+
+{% macro rule_anchor(rule) %}
+{% if rule.reference %}
+<a class="link-pill" href="{{ rule.reference.url }}" target="_blank" rel="noopener noreferrer">
+  {{ rule.rule_name }} · {{ rule.source }} · {{ rule.confidence.value }}
+</a>
+{% else %}
+<span class="link-pill">{{ rule.rule_name }} · {{ rule.source }}</span>
+{% endif %}
+{% endmacro %}
+
+{% macro patch_card(patch) %}
+{% set affected = patch.affected_versions | join(", ") if patch.affected_versions else "not specified" %}
+<div class="patch-card">
+  <div class="patch-title">
+    <a href="{{ patch.advisory_url }}" target="_blank" rel="noopener noreferrer">{{ patch.advisory_title }}</a>
+  </div>
+  <div class="details" style="grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 8px;">
+    <div class="detail">
+      <div class="k">Source</div>
+      <div class="v">
+        {% if patch.advisory_url %}
+          <a href="{{ patch.advisory_url }}" target="_blank" rel="noopener noreferrer">{{ patch.source }}</a>
+        {% else %}
+          {{ patch.source }}
+        {% endif %}
+      </div>
+    </div>
+    {{ detail_cell("Product", patch.product) }}
+    {{ detail_cell("Affected versions", affected) }}
+    {{ detail_cell("Fixed version", patch.fixed_version or "not specified") }}
+    {{ detail_cell("Patch ID", patch.patch_id or "not specified") }}
+    {{ detail_cell("Patch name", patch.patch_name or "not specified") }}
+    {{ detail_cell("Confidence", patch.confidence.value) }}
+    {% if patch.patch_availability_url %}
+    <div class="detail" style="grid-column: 1 / -1;">
+      <div class="k">Patch Availability (MOS)</div>
+      <div class="v"><a href="{{ patch.patch_availability_url }}" target="_blank" rel="noopener noreferrer">{{ patch.patch_availability_url }}</a></div>
+    </div>
+    {% endif %}
+  </div>
+  {% if patch.notes %}
+  <div class="subtitle">{{ patch.notes }}</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro patch_section(patches) %}
+<details class="section">
+  <summary><span class="section-title">Patch References</span></summary>
+  <div>
+    {% if patches %}
+      {% for patch in patches %}
+        {{ patch_card(patch) }}
+      {% endfor %}
+    {% else %}
+      <span class="subtitle">none</span>
+    {% endif %}
+  </div>
+</details>
+{% endmacro %}
+
+{% macro links_section(title, links, overflow_links=[], note=None) %}
+<details class="section">
+  <summary><span class="section-title">{{ title }}</span></summary>
+  <div class="links">
+    {% if note %}<span class="subtitle">{{ note }}</span>{% endif %}
+    {% if links %}
+      {% for link in links %}{{ link }}{% endfor %}
+    {% else %}
+      <span class="subtitle">none</span>
+    {% endif %}
+    {% if overflow_links %}
+    <details class="section" style="width: 100%; margin-top: 8px;">
+      <summary><span class="section-title">More references ({{ overflow_links | length }})</span></summary>
+      <div class="links">
+        {% for link in overflow_links %}{{ link }}{% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </div>
+</details>
+{% endmacro %}
+
+{% macro text_section(title, body, open=False) %}
+<details class="section"{% if open %} open{% endif %}>
+  <summary><span class="section-title">{{ title }}</span></summary>
+  <div>{{ body }}</div>
+</details>
+{% endmacro %}
+
+{% macro finding_card(fc) %}
+{% set f = fc.finding %}
+<details class="finding"
+  data-priority="{{ f.priority.value }}"
+  data-detection="{{ fc.detection_state }}"
+  data-product="{{ fc.product }}"
+  data-machine="{{ f.product.machine_id or 'unknown' }}"
+  data-exploit="{{ 'yes' if f.threat_context and f.threat_context.public_exploit else 'no' }}"
+  data-search="{{ fc.search_text }}">
+  <summary>
+    <div class="finding-head">
+      <div>
+        <h2 class="title">
+          {{ f.cve.cve_id }}
+          <button class="copy-btn" onclick="copyCve(this, '{{ f.cve.cve_id }}')">Copy</button>
+        </h2>
+        <div class="subtitle">{{ fc.product }} {{ f.product.raw_version }}</div>
+        <div class="description">{{ f.cve.description or "No description" }}</div>
+      </div>
+      <div class="badges">
+        {% if f.threat_context and f.threat_context.public_exploit %}
+        <span class="badge exploit">⚑ Public Exploit</span>
+        {% endif %}
+        <span class="badge {{ f.priority.value }}">{{ f.priority.value }} · {{ f.priority_score }}</span>
+        <span class="badge {{ f.cve.severity.value }}">{{ f.cve.severity.value }}</span>
+        <span class="badge {{ fc.detection_state }}">{{ fc.detection_label }}</span>
+      </div>
+    </div>
+  </summary>
+  <div class="finding-body">
+    <div class="details">
+      {{ detail_cell("CVSS", f.cve.cvss_score if f.cve.cvss_score is not none else "n/a") }}
+      {{ detail_cell("Affected", f.affected_status.value) }}
+      {{ detail_cell("Mapping Confidence", f.mapping_confidence.value) }}
+      {{ detail_cell("EPSS", f.cve.epss_score if f.cve.epss_score is not none else "n/a") }}
+      <div class="detail">
+        <div class="k">Support Status</div>
+        <div class="v">
+          {% if f.product.support_status.value == "end_of_life" %}
+          <span class="badge end_of_life" style="border-radius: 4px; padding: 2px 6px; font-size: 11px;">EOL{% if f.product.eol_date %} · {{ f.product.eol_date }}{% endif %}</span>
+          {% elif f.product.support_status.value == "extended_support" %}
+          <span class="badge extended_support" style="border-radius: 4px; padding: 2px 6px; font-size: 11px;">Ext. Support{% if f.product.eol_date %} until {{ f.product.eol_date }}{% endif %}</span>
+          {% elif f.product.support_status.value == "supported" %}
+          <span style="color: var(--ok); font-weight: 680;">Supported{% if f.product.eol_date %} until {{ f.product.eol_date }}{% endif %}</span>
+          {% else %}
+          <span style="color: var(--muted);">Unknown</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {{ text_section("Description", f.cve.description or "No description") }}
+    {{ text_section("Priority Explanation", f.priority_explanation) }}
+    {% if f.threat_context and f.threat_context.exploit_references %}
+    {% set exploit_links = f.threat_context.exploit_references %}
+    <details class="section">
+      <summary><span class="section-title">Public Exploit References ({{ exploit_links | length }})</span></summary>
+      <div class="links">
+        {% for ref in exploit_links %}
+        <a class="link-pill" href="{{ ref.url }}" target="_blank" rel="noopener noreferrer">{{ ref.label or ref.url }}</a>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+    <details class="section">
+      <summary><span class="section-title">ATT&amp;CK Techniques</span></summary>
+      <div class="links">
+        {% if fc.techniques %}
+          {% for tech in fc.techniques %}{{ technique_anchor(tech) }}{% endfor %}
+        {% else %}
+          <span class="subtitle">none</span>
+        {% endif %}
+      </div>
+    </details>
+    {% set detection_note = "Detection search was skipped for this run." if fc.detection_state == "skipped" else none %}
+    <details class="section">
+      <summary><span class="section-title">Detection Rules</span></summary>
+      <div class="links">
+        {% if detection_note %}<span class="subtitle">{{ detection_note }}</span>{% endif %}
+        {% if fc.rules %}
+          {% for rule in fc.rules %}{{ rule_anchor(rule) }}{% endfor %}
+        {% else %}
+          <span class="subtitle">none</span>
+        {% endif %}
+      </div>
+    </details>
+    {{ patch_section(fc.patches) }}
+    <details class="section">
+      <summary><span class="section-title">Evidence References</span></summary>
+      <div class="links">
+        {% if fc.evidence_primary %}
+          {% for ref in fc.evidence_primary %}{{ reference_anchor(ref) }}{% endfor %}
+        {% else %}
+          <span class="subtitle">none</span>
+        {% endif %}
+        {% if fc.evidence_overflow %}
+        <details class="section" style="width: 100%; margin-top: 8px;">
+          <summary><span class="section-title">More references ({{ fc.evidence_overflow | length }})</span></summary>
+          <div class="links">
+            {% for ref in fc.evidence_overflow %}{{ reference_anchor(ref) }}{% endfor %}
+          </div>
+        </details>
+        {% endif %}
+      </div>
+    </details>
+    {{ text_section("Recommended Action", f.recommended_action) }}
+  </div>
+</details>
+{% endmacro %}
+
+{% macro priority_badges(counts) %}
+  {% for priority in ["critical", "high", "medium", "low"] %}
+    {% if counts.get(priority, 0) %}
+      <span class="badge {{ priority }}">{{ counts[priority] }} {{ priority }}</span>
+    {% endif %}
+  {% endfor %}
+{% endmacro %}
+
+{% macro support_card(ps) %}
+{% set is_db = "oracle database" in ps.name | lower %}
+<div class="support-card support-card--{{ ps.support_status }}">
+  <div class="support-card-header">
+    <span class="support-card-title">Support Status</span>
+    {% if ps.support_status == "end_of_life" %}
+    <span class="badge end_of_life">End of Life</span>
+    {% elif ps.support_status == "extended_support" %}
+    <span class="badge extended_support">Extended Support</span>
+    {% elif ps.support_status == "supported" %}
+    <span class="badge" style="background:#dcfce7;color:var(--ok);">Premier Support</span>
+    {% else %}
+    <span class="badge">Unknown</span>
+    {% endif %}
+  </div>
+  <div>
+    {% if ps.support_status == "end_of_life" %}
+    <p class="support-card-desc">
+      <strong>{{ ps.name }} {{ ps.version }}</strong> reached <strong>End of Life</strong>{% if ps.eol_date %} on <strong>{{ ps.eol_date }}</strong>{% endif %}.
+      No new security patches are issued under standard support. An upgrade to a supported release is strongly recommended.
+    </p>
+    {% elif ps.support_status == "extended_support" %}
+    <p class="support-card-desc">
+      <strong>{{ ps.name }} {{ ps.version }}</strong> is under <strong>Extended Support</strong>{% if ps.eol_date %} until <strong>{{ ps.eol_date }}</strong>{% endif %}.
+      {% if ps.premier_end %}Premier Support ended <strong>{{ ps.premier_end }}</strong>. {% endif %}
+      Continued security patch coverage requires an Extended Support fee.
+      Plan migration to a Premier Support release before Extended Support expires.
+    </p>
+    {% elif ps.support_status == "supported" %}
+    <p class="support-card-desc">
+      <strong>{{ ps.name }} {{ ps.version }}</strong> is under active <strong>Premier Support</strong>{% if ps.eol_date %} until <strong>{{ ps.eol_date }}</strong>{% endif %}.
+      Security patches are issued on Oracle's quarterly Critical Patch Update (CPU) schedule.
+    </p>
+    {% else %}
+    <p class="support-card-desc">
+      Support status for <strong>{{ ps.name }} {{ ps.version }}</strong> is <strong>Unknown</strong> — this product is not tracked by endoflife.date.
+      Verify the support lifecycle against the <strong>Oracle Lifetime Support Policy</strong> before assuming coverage.
+    </p>
+    {% endif %}
+    {% if is_db %}
+    <div class="support-card-mos">
+      <span class="support-card-mos-label">MOS</span>
+      <span>Doc ID <strong>742060.1</strong> — "Release Schedule of Current Database Releases" provides authoritative release and Premier/Extended Support end dates for Oracle Database. Check My Oracle Support for the current schedule.</span>
+    </div>
+    {% elif ps.support_status == "unknown" %}
+    <div class="support-card-mos">
+      <span class="support-card-mos-label">MOS</span>
+      <span>Check <strong>My Oracle Support (MOS)</strong> or the Oracle Lifetime Support Policy page for product-specific lifecycle documentation.</span>
+    </div>
+    {% endif %}
+    {% if ps.patches %}
+    <div class="support-card-patches">
+      <div class="support-card-patches-title">Recommended Patches ({{ ps.patches | length }})</div>
+      <ul class="support-card-patch-list">
+        {% for p in ps.patches %}
+        <li>
+          {% if p.advisory_url %}
+          <a href="{{ p.advisory_url }}" target="_blank" rel="noopener noreferrer">{{ p.patch_name or p.advisory_title }}</a>
+          {% else %}
+          {{ p.patch_name or p.advisory_title }}
+          {% endif %}
+          <span class="patch-meta">
+            · {{ p.source }}
+            {% if p.fixed_version %} · Fixed: {{ p.fixed_version }}{% endif %}
+            {% if p.patch_id %} · ID: {{ p.patch_id }}{% endif %}
+            {% if p.patch_availability_url %} · <a href="{{ p.patch_availability_url }}" target="_blank" rel="noopener noreferrer">MOS</a>{% endif %}
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+{% macro product_group(ps) %}
+<details class="product-group{% if ps.wildcard_only %} product-group--wildcard{% endif %}">
+  <summary>
+    <div>
+      <span class="product-group-name">{{ ps.name }}</span>
+      <span class="product-group-meta-inline">{{ ps.meta }}</span>
+      <span class="product-group-chevron">›</span>
+    </div>
+    <div class="product-group-meta">
+      {% if ps.wildcard_only %}
+      <span class="badge badge--wildcard">{{ ps.wildcard_count }} unresolved CVEs</span>
+      {% else %}
+      <span class="badge">{{ ps.total }} findings</span>
+      {{ priority_badges(ps.priority_counts) }}
+      {% endif %}
+      {% if ps.support_status == "end_of_life" %}
+      <span class="badge end_of_life">EOL{% if ps.eol_date %} {{ ps.eol_date }}{% endif %}</span>
+      {% elif ps.support_status == "extended_support" %}
+      <span class="badge extended_support">Ext. Support{% if ps.eol_date %} until {{ ps.eol_date }}{% endif %}</span>
+      {% endif %}
+    </div>
+  </summary>
+  <div class="product-group-findings">
+    {{ support_card(ps) }}
+    {% if ps.wildcard_only %}
+    <div class="wildcard-notice">
+      <strong>{{ ps.wildcard_count }} CVE{{ 's' if ps.wildcard_count != 1 }} returned by NVD using a wildcard product CPE.</strong>
+      Version-specific affectedness could not be confirmed from the Oracle CPU advisory.
+      Use <code>--include-unconfirmed</code> to see individual CVE entries, or verify manually against the
+      <a href="https://www.oracle.com/security-alerts/" target="_blank" rel="noopener noreferrer">Oracle Security Alerts</a> page.
+    </div>
+    {% else %}
+    {% for fc in ps.findings %}
+      {{ finding_card(fc) }}
+    {% endfor %}
+    {% endif %}
+  </div>
+</details>
+{% endmacro %}
+
+{% macro machine_group(ms) %}
+<details class="machine-group">
+  <summary>
+    <div>
+      <span class="machine-group-name">{{ ms.machine_id }}</span>
+      {% if ms.owner %}<span class="machine-group-owner">{{ ms.owner }}</span>{% endif %}
+      <span class="machine-group-chevron">›</span>
+    </div>
+    <div class="machine-group-meta">
+      <span class="badge">{{ ms.products | length }} product{{ 's' if ms.products | length != 1 else '' }}</span>
+      <span class="badge">{{ ms.total }} findings</span>
+      {{ priority_badges(ms.priority_counts) }}
+    </div>
+  </summary>
+  <div class="machine-group-products">
+    {% for ps in ms.products %}
+      {{ product_group(ps) }}
+    {% endfor %}
+  </div>
+</details>
+{% endmacro %}
+
+{% macro warning_item(warning) %}
+{% if warning.startswith("[") and "] " in warning %}
+  {% set bracket_end = warning.index("] ") %}
+  {% set tag = warning[1:bracket_end] | upper %}
+  {% set message = warning[bracket_end + 2:] %}
+{% else %}
+  {% set tag = "WARN" %}
+  {% set message = warning %}
+{% endif %}
+<div class="warning-item">
+  <span class="warning-tag">{{ tag }}</span>
+  <span>{{ message }}</span>
+</div>
+{% endmacro %}
+
+{# ─────────────────────────────────────────────
+   DOCUMENT HTML
+   ───────────────────────────────────────────── #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Exposure &amp; Threat Qualification Report</title>
+  <style>
+    /* ── Design tokens ─────────────────────────────────── */
+    :root {
+      color-scheme: light;
+      --bg:           #f6f7f9;
+      --panel:        #ffffff;
+      --panel-soft:   #f0f4f8;
+      --ink:          #111827;
+      --muted:        #5b6472;
+      --line:         #d8dee8;
+      --accent:       #0f766e;
+      --accent-ink:   #ecfeff;
+      --critical:     #b42318;
+      --high:         #c2410c;
+      --medium:       #b7791f;
+      --low:          #2563eb;
+      --info:         #64748b;
+      --ok:           #15803d;
+      --gap:          #b42318;
+      --shadow:       0 12px 30px rgba(17, 24, 39, 0.08);
+    }
+
+    /* ── Reset & base ──────────────────────────────────── */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system,
+                   BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Layout shell ──────────────────────────────────── */
+    .shell { max-width: 1440px; margin: 0 auto; padding: 28px; }
+
+    /* ── Top bar ───────────────────────────────────────── */
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: end;
+      padding: 8px 0 22px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 { margin: 0; font-size: 28px; line-height: 1.1; }
+    .meta { color: var(--muted); margin-top: 8px; }
+
+    /* ── Summary metrics ───────────────────────────────── */
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+      gap: 12px;
+      margin: 20px 0;
+    }
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+    .metric .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .metric .value { font-size: 24px; font-weight: 760; margin-top: 4px; }
+
+    /* ── Sticky toolbar ────────────────────────────────── */
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: grid;
+      grid-template-columns: minmax(240px, 1.6fr) repeat(6, minmax(110px, .55fr));
+      gap: 10px;
+      align-items: center;
+      background: rgba(246, 247, 249, 0.94);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--line);
+      padding: 12px 0;
+    }
+    input, select, button {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+      padding: 9px 11px;
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      background: var(--ink);
+      color: white;
+      border-color: var(--ink);
+      font-weight: 650;
+    }
+    .result-count { color: var(--muted); margin: 14px 0; }
+
+    /* ── Two-column layout ─────────────────────────────── */
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 18px;
+      align-items: start;
+    }
+    .findings { display: grid; gap: 12px; }
+
+    /* ── Finding card ──────────────────────────────────── */
+    .finding {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--info);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+    .finding[data-priority="critical"] { border-left-color: var(--critical); }
+    .finding[data-priority="high"]     { border-left-color: var(--high); }
+    .finding[data-priority="medium"]   { border-left-color: var(--medium); }
+    .finding[data-priority="low"]      { border-left-color: var(--low); }
+    .finding > summary { cursor: pointer; list-style: none; }
+    .finding > summary::-webkit-details-marker { display: none; }
+    .finding > summary::after {
+      content: "Open";
+      display: inline-flex;
+      margin-top: 10px;
+      color: var(--accent);
+      font-weight: 760;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .finding[open] > summary::after { content: "Close"; }
+
+    /* ── Finding header ────────────────────────────────── */
+    .finding-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: start;
+    }
+    .title { font-size: 17px; font-weight: 760; margin: 0 0 6px; display: flex; align-items: center; gap: 6px; }
+    .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+      width: auto;
+      min-height: auto;
+      padding: 2px 7px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      cursor: pointer;
+      transition: color .15s, border-color .15s, background .15s;
+      user-select: none;
+    }
+    .copy-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--panel-soft); }
+    .copy-btn.copied { color: var(--ok); border-color: var(--ok); background: #dcfce7; }
+    .description {
+      color: var(--muted);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .subtitle { color: var(--muted); }
+
+    /* ── Badges ────────────────────────────────────────── */
+    .badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      background: var(--panel-soft);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 680;
+      white-space: nowrap;
+    }
+    .badge.critical  { background: #fee2e2; color: var(--critical); }
+    .badge.high      { background: #ffedd5; color: var(--high); }
+    .badge.medium    { background: #fef3c7; color: var(--medium); }
+    .badge.low       { background: #dbeafe; color: var(--low); }
+    .badge.gap            { background: #fee2e2; color: var(--gap); }
+    .badge.exploit        { background: #fee2e2; color: var(--critical); border: 1px solid #fca5a5; font-weight: 760; }
+    .badge.covered        { background: #dcfce7; color: var(--ok); }
+    .badge.skipped        { background: #e2e8f0; color: #475569; }
+    .badge.end_of_life    { background: #fee2e2; color: var(--critical); border: 1px solid #fca5a5; font-weight: 760; }
+    .badge.extended_support { background: #fef3c7; color: var(--medium); border: 1px solid #fde68a; }
+
+    /* ── Detail grid ───────────────────────────────────── */
+    .details {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .detail {
+      background: var(--panel-soft);
+      border-radius: 8px;
+      padding: 10px;
+      min-width: 0;
+    }
+    .detail .k { color: var(--muted); font-size: 12px; margin-bottom: 3px; }
+    .detail .v { font-weight: 680; overflow-wrap: anywhere; }
+    .finding-body { margin-top: 14px; }
+
+    /* ── Collapsible sections ──────────────────────────── */
+    details.section {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      margin-top: 12px;
+    }
+    details.section > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    details.section > summary::-webkit-details-marker { display: none; }
+    details.section > summary::after {
+      content: "+";
+      color: var(--muted);
+      font-weight: 760;
+      font-size: 16px;
+    }
+    details.section[open] > summary::after { content: "−"; }
+    .section-title {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      margin-bottom: 8px;
+    }
+
+    /* ── Link pills ────────────────────────────────────── */
+    .links { display: flex; flex-wrap: wrap; gap: 8px; }
+    .link-pill {
+      display: inline-flex;
+      max-width: 100%;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 9px;
+      background: white;
+      overflow-wrap: anywhere;
+    }
+
+    /* ── Patch card ────────────────────────────────────── */
+    .patch-card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 8px;
+    }
+    .patch-title { margin-bottom: 8px; font-weight: 680; }
+
+    /* ── Sidebar ───────────────────────────────────────── */
+    .side { position: sticky; top: 74px; display: grid; gap: 12px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 14px;
+    }
+    .panel h2 { margin: 0 0 10px; font-size: 15px; }
+    .compact-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+    .compact-list li { color: var(--muted); overflow-wrap: anywhere; }
+
+    /* ── Product list (sidebar) ────────────────────────── */
+    .product-list { display: grid; gap: 10px; }
+    .product-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .product-item:hover { border-color: var(--accent); background: var(--panel-soft); }
+    .product-item.active { border-color: var(--accent); background: #f0fdfa; }
+    .product-item-name { font-weight: 760; font-size: 13px; margin-bottom: 2px; }
+    .product-item-meta { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .product-item-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+
+    /* ── Product groups ────────────────────────────────── */
+    .product-group {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .product-group > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px;
+      background: var(--panel-soft);
+      border-bottom: 1px solid var(--line);
+    }
+    .product-group > summary::-webkit-details-marker { display: none; }
+    .product-group-name { font-size: 15px; font-weight: 760; }
+    .product-group-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .product-group-chevron {
+      color: var(--muted);
+      font-size: 18px;
+      font-weight: 760;
+      margin-left: 8px;
+      transition: transform .15s;
+      display: inline-block;
+    }
+    .product-group[open] .product-group-chevron { transform: rotate(90deg); }
+    .product-group-findings { display: grid; gap: 12px; padding: 14px; }
+    .product-group-meta-inline { color: var(--muted); font-size: 12px; margin-left: 6px; font-weight: 400; }
+    .product-group--wildcard > summary { background: var(--surface); opacity: .85; }
+    .badge--wildcard { background: #f3f4f6; color: var(--muted); border: 1px solid var(--line); }
+    .wildcard-notice {
+      font-size: 13px;
+      color: var(--muted);
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 16px;
+      line-height: 1.6;
+    }
+    .wildcard-notice strong { color: var(--text); }
+
+    /* ── Machine groups ────────────────────────────────── */
+    .machine-group {
+      background: var(--panel);
+      border: 2px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .machine-group > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 18px;
+      background: var(--ink);
+      color: white;
+    }
+    .machine-group > summary::-webkit-details-marker { display: none; }
+    .machine-group-name { font-size: 16px; font-weight: 760; color: white; }
+    .machine-group-owner {
+      font-size: 12px;
+      font-weight: 400;
+      color: rgba(255,255,255,0.6);
+      margin-left: 8px;
+    }
+    .machine-group-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .machine-group-meta .badge { background: rgba(255,255,255,0.15); color: white; border: 1px solid rgba(255,255,255,0.2); }
+    .machine-group-chevron {
+      color: rgba(255,255,255,0.6);
+      font-size: 18px;
+      font-weight: 760;
+      margin-left: 4px;
+      transition: transform .15s;
+      display: inline-block;
+    }
+    .machine-group[open] .machine-group-chevron { transform: rotate(90deg); }
+    .machine-group-products { display: grid; gap: 12px; padding: 14px; background: var(--bg); }
+
+    /* ── Machine items (sidebar) ───────────────────────── */
+    .machine-item { margin-bottom: 4px; }
+    .machine-item > summary { list-style: none; }
+    .machine-item > summary::-webkit-details-marker { display: none; }
+    .machine-item-header {
+      background: var(--panel-soft);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 5px 9px;
+      font-weight: 680;
+      font-size: 11px;
+      letter-spacing: .02em;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      transition: border-color .15s, background .15s;
+    }
+    .machine-item-header:hover { border-color: var(--accent); background: #f0fdfa; }
+    .machine-item-header.active { border-color: var(--accent); background: #f0fdfa; color: var(--accent); }
+    .machine-item-count {
+      font-size: 10px;
+      font-weight: 400;
+      color: var(--muted);
+      background: var(--line);
+      border-radius: 999px;
+      padding: 1px 6px;
+      white-space: nowrap;
+    }
+    .machine-item-products { display: grid; gap: 5px; padding: 5px 0 4px 8px; }
+    .machine-item-products .product-item { padding: 7px 10px; }
+    .machine-item-products .product-item-name { font-size: 11px; margin-bottom: 1px; }
+    .machine-item-products .product-item-meta { font-size: 10px; margin-bottom: 4px; }
+
+    /* ── Notices & warnings ────────────────────────────── */
+    .notice {
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      color: #9a3412;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 12px 0;
+      font-weight: 650;
+    }
+    .warnings-section { display: grid; gap: 8px; margin: 12px 0; }
+    .warning-item {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px;
+      align-items: baseline;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-left: 4px solid #d97706;
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #78350f;
+      font-size: 13px;
+    }
+    .warning-tag {
+      font-size: 11px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      background: #fde68a;
+      color: #92400e;
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+    .empty {
+      display: none;
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+    }
+
+    /* ── Executive summary ────────────────────────────── */
+    .exec-summary {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--accent);
+      border-radius: 10px;
+      margin: 20px 0 4px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .exec-summary > summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 20px;
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+      transition: background .15s;
+    }
+    .exec-summary > summary:hover { background: var(--panel-soft); }
+    .exec-summary > summary::-webkit-details-marker { display: none; }
+    .exec-summary-left { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .exec-summary-title {
+      font-size: 15px;
+      font-weight: 760;
+      letter-spacing: .01em;
+      white-space: nowrap;
+    }
+    .exec-summary-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+    .exec-expand {
+      font-size: 12px;
+      color: var(--accent);
+      font-weight: 680;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .exec-summary > summary::after { content: none; }
+    .exec-summary-body {
+      padding: 16px 20px 20px;
+      border-top: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+    .exec-summary-list {
+      margin: 0;
+      padding: 0 0 0 18px;
+      display: grid;
+      gap: 8px;
+      max-width: 860px;
+    }
+    .exec-summary-list li {
+      font-size: 14px;
+      line-height: 1.65;
+      color: var(--ink);
+      padding-left: 4px;
+    }
+    .exec-summary-footer {
+      margin-top: 12px;
+      font-size: 11px;
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    /* ── Risk posture badge ───────────────────────────── */
+    .exec-posture-right {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+    .posture-badge {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 2px solid transparent;
+      white-space: nowrap;
+      line-height: 1.2;
+    }
+    .posture-badge .posture-label {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      opacity: .75;
+    }
+    .posture-badge .posture-level {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: .04em;
+    }
+    .posture-critical { background: #fee2e2; color: var(--critical); border-color: #fca5a5; }
+    .posture-high     { background: #ffedd5; color: var(--high);     border-color: #fdba74; }
+    .posture-moderate { background: #fef3c7; color: var(--medium);   border-color: #fde68a; }
+    .posture-low      { background: #dcfce7; color: var(--ok);       border-color: #86efac; }
+
+    /* ── Drivers / actions grid ───────────────────────── */
+    .exec-drivers {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .exec-drivers-col { padding: 14px 16px; }
+    .exec-drivers-col:first-child {
+      border-right: 1px solid var(--line);
+      background: #f8fafc;
+    }
+    .exec-drivers-col h3 {
+      margin: 0 0 10px;
+      font-size: 11px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+    }
+    .exec-driver-row, .exec-action-row {
+      display: grid;
+      grid-template-columns: 16px 1fr;
+      gap: 8px;
+      align-items: baseline;
+      margin-bottom: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .exec-driver-row:last-child, .exec-action-row:last-child { margin-bottom: 0; }
+    .driver-icon-kev  { color: var(--critical); font-size: 14px; }
+    .driver-icon-warn { color: var(--medium);   font-size: 12px; }
+    .action-arrow-urgent { color: var(--critical); font-weight: 800; }
+    .action-arrow-normal { color: var(--medium);   font-weight: 800; }
+    .posture-method {
+      margin-top: 10px;
+    }
+    .posture-method > summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 600;
+      user-select: none;
+    }
+    .posture-method > summary::-webkit-details-marker { display: none; }
+    .posture-method > summary::before { content: "ⓘ "; }
+    .posture-method-body {
+      margin-top: 8px;
+      padding: 10px 14px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+    .posture-method-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 6px;
+    }
+    .posture-method-body td {
+      padding: 4px 8px;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+    }
+    .posture-method-body tr:last-child td { border-bottom: none; }
+    .posture-method-body td:first-child {
+      white-space: nowrap;
+      font-weight: 700;
+      width: 90px;
+    }
+    .pm-critical { color: var(--critical); }
+    .pm-high     { color: var(--high); }
+    .pm-moderate { color: var(--medium); }
+    .pm-low      { color: var(--ok); }
+    .driver-expand {
+      display: block;
+      margin-top: 4px;
+    }
+    .driver-expand > summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 680;
+      user-select: none;
+    }
+    .driver-expand > summary::-webkit-details-marker { display: none; }
+    .driver-expand > summary::before { content: "▸ "; }
+    .driver-expand[open] > summary::before { content: "▾ "; }
+    .driver-expand-list {
+      margin: 5px 0 0;
+      padding: 7px 10px;
+      background: rgba(180, 35, 24, 0.05);
+      border-left: 2px solid #fca5a5;
+      border-radius: 4px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .driver-expand-list .kev-id {
+      font-size: 11px;
+      font-weight: 680;
+      font-family: ui-monospace, monospace;
+      background: #fee2e2;
+      color: var(--critical);
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+    .driver-expand-list .crit-id {
+      font-size: 11px;
+      font-weight: 680;
+      font-family: ui-monospace, monospace;
+      background: #ffedd5;
+      color: var(--high);
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+    @media (max-width: 720px) {
+      .exec-drivers { grid-template-columns: 1fr; }
+      .exec-drivers-col:first-child { border-right: none; border-bottom: 1px solid var(--line); }
+      .exec-posture-right { flex-direction: column; align-items: flex-end; gap: 6px; }
+    }
+
+    /* ── Product coverage panel ───────────────────────── */
+    .coverage-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 11px;
+      display: grid;
+      gap: 4px;
+    }
+    .coverage-item--end_of_life      { border-left: 4px solid var(--critical); }
+    .coverage-item--extended_support { border-left: 4px solid var(--medium); }
+    .coverage-item--supported        { border-left: 4px solid var(--ok); }
+    .coverage-item--unknown          { border-left: 4px solid var(--muted); }
+    .coverage-item-name   { font-weight: 760; font-size: 13px; }
+    .coverage-item-meta   { color: var(--muted); font-size: 11px; }
+    .coverage-item-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+    .badge.no-cve { background: #dcfce7; color: var(--ok); }
+
+    /* ── Support card ─────────────────────────────────── */
+    .support-card {
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      border-left: 5px dashed var(--info);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .support-card--supported        { border-left-color: var(--ok); }
+    .support-card--extended_support { border-left-color: var(--medium); }
+    .support-card--end_of_life      { border-left-color: var(--critical); }
+    .support-card--unknown          { border-left-color: var(--muted); }
+    .support-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .support-card-title {
+      font-size: 12px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+    }
+    .support-card-desc { margin: 0 0 4px; font-size: 13px; }
+    .support-card-mos {
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #9a3412;
+    }
+    .support-card-mos-label {
+      font-size: 11px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      background: #fde68a;
+      color: #92400e;
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .support-card-patches {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+    .support-card-patches-title {
+      font-size: 11px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .support-card-patch-list {
+      margin: 0;
+      padding: 0 0 0 16px;
+      display: grid;
+      gap: 6px;
+    }
+    .support-card-patch-list li {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--ink);
+    }
+    .support-card-patch-list .patch-cve {
+      font-weight: 760;
+      color: var(--accent);
+    }
+    .support-card-patch-list .patch-meta {
+      color: var(--muted);
+    }
+
+    /* ── Responsive ────────────────────────────────────── */
+    @media (max-width: 1100px) {
+      .summary { grid-template-columns: repeat(3, 1fr); }
+      .toolbar { grid-template-columns: 1fr 1fr 1fr; }
+      .layout  { grid-template-columns: 1fr; }
+      .side    { position: static; }
+    }
+    @media (max-width: 720px) {
+      .shell         { padding: 16px; }
+      .topbar        { grid-template-columns: 1fr; }
+      .summary       { grid-template-columns: repeat(2, 1fr); }
+      .toolbar       { grid-template-columns: 1fr; }
+      .finding-head  { grid-template-columns: 1fr; }
+      .badges        { justify-content: flex-start; }
+      .details       { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main class="shell">
+
+  {# ── En-tête ──────────────────────────────────────────── #}
+  <header class="topbar">
+    <div>
+      <h1>Exposure &amp; Threat Qualification Report</h1>
+      <div class="meta">Report generated for <strong>{{ customer }}</strong> on {{ generated_at }} · {{ report_mode }}</div>
+    </div>
+    <div class="meta">Highest: {{ highest_summary or "none" }}</div>
+  </header>
+
+  {# ── Executive summary ────────────────────────────────── #}
+  <details class="exec-summary" open>
+    <summary>
+      <div class="exec-summary-left">
+        <span class="exec-summary-title">Executive Summary</span>
+        <div class="exec-summary-pills">
+          {% if counts.critical %}
+          <span class="badge critical" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ counts.critical }} Critical</span>
+          {% endif %}
+          {% if counts.high %}
+          <span class="badge high" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ counts.high }} High</span>
+          {% endif %}
+          {% if counts.medium %}
+          <span class="badge medium" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ counts.medium }} Medium</span>
+          {% endif %}
+          {% if gap_critical_high and total_critical_high %}
+          {% set gap_pct = (gap_critical_high / total_critical_high * 100) | round | int %}
+          <span class="badge gap" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ gap_pct }}% Detection Gap</span>
+          {% endif %}
+          {% if eol_products_count %}
+          <span class="badge end_of_life" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ eol_products_count }} EOL</span>
+          {% endif %}
+          {% if ext_products_count %}
+          <span class="badge extended_support" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ ext_products_count }} Ext. Support</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="exec-posture-right">
+        <div class="posture-badge {{ risk_posture.css_class }}" title="{{ risk_posture.tooltip }}">
+          <span class="posture-label">Risk Posture</span>
+          <span class="posture-level">{{ risk_posture.level }}</span>
+        </div>
+        <span class="exec-expand">Click to read ›</span>
+      </div>
+    </summary>
+    <div class="exec-summary-body">
+      {% if risk_posture.drivers %}
+      <div class="exec-drivers">
+        <div class="exec-drivers-col">
+          <h3>Key Drivers</h3>
+          {% for d in risk_posture.drivers %}
+          <div class="exec-driver-row">
+            <span class="{{ d.icon_class }}">{{ d.icon }}</span>
+            <span>
+              <strong>{{ d.label }}</strong> · {{ d.detail }}
+              {% if d.get('expandable_items') %}
+              <details class="driver-expand">
+                <summary>Show CVEs</summary>
+                <div class="driver-expand-list">
+                  {% for id in d.expandable_items %}<span class="{{ d.get('expandable_item_class', 'kev-id') }}">{{ id }}</span>{% endfor %}
+                </div>
+              </details>
+              {% endif %}
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="exec-drivers-col">
+          <h3>Required Actions</h3>
+          {% for d in risk_posture.drivers %}
+          <div class="exec-action-row">
+            <span class="{{ d.action_class }}">→</span>
+            <span>{{ d.action }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <details class="posture-method">
+        <summary>How is the Risk Posture determined?</summary>
+        <div class="posture-method-body">
+          The Risk Posture is a single-signal rating computed automatically from
+          the findings in this report. The highest matching level applies.
+          <table>
+            <tr>
+              <td class="pm-critical">CRITICAL</td>
+              <td>Any CVE listed in the CISA KEV catalog (actively exploited in
+              the wild); <em>or</em> Critical/High detection gap above 80%;
+              <em>or</em> an EOL product with business criticality
+              <strong>high</strong> or <strong>critical</strong> and unpatched
+              Critical vulnerabilities.</td>
+            </tr>
+            <tr>
+              <td class="pm-high">HIGH</td>
+              <td>One or more Critical findings; <em>or</em> Critical/High
+              detection gap above 70%; <em>or</em> more than 10 findings with a
+              public exploit available.</td>
+            </tr>
+            <tr>
+              <td class="pm-moderate">MODERATE</td>
+              <td>One or more High findings; <em>or</em> Critical/High detection
+              gap above 50%.</td>
+            </tr>
+            <tr>
+              <td class="pm-low">LOW</td>
+              <td>Only Medium or Low findings with a detection gap below 30%.</td>
+            </tr>
+          </table>
+        </div>
+      </details>
+      {% endif %}
+      <ul class="exec-summary-list">
+        {% for point in executive_summary %}
+        <li>{{ point }}</li>
+        {% endfor %}
+      </ul>
+      <p class="exec-summary-footer">Auto-generated from structured finding data · {{ generated_at }} · {{ report_mode }}</p>
+    </div>
+  </details>
+
+  {# ── Métriques ────────────────────────────────────────── #}
+  <section class="summary" aria-label="Assessment summary">
+    {{ metric("Findings",  total_findings) }}
+    {{ metric("Critical",  counts.critical) }}
+    {{ metric("High",      counts.high) }}
+    {{ metric("Medium",    counts.medium) }}
+    {{ metric("Covered",   covered) }}
+    {{ metric("Gaps" if not detection_skipped else "Detection",
+              gaps   if not detection_skipped else 0) }}
+    <div class="metric">
+      <div class="label">Support Risk</div>
+      <div class="value" style="font-size: {% if eol_products_count > 0 %}24{% else %}24{% endif %}px; color: {% if eol_products_count > 0 %}var(--critical){% elif ext_products_count > 0 %}var(--medium){% else %}var(--ok){% endif %};">
+        {{ eol_products_count + ext_products_count }}
+      </div>
+      <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">
+        {% if eol_products_count %}{{ eol_products_count }} EOL{% endif %}{% if eol_products_count and ext_products_count %} · {% endif %}{% if ext_products_count %}{{ ext_products_count }} ext.{% endif %}{% if not eol_products_count and not ext_products_count %}all supported{% endif %}
+      </div>
+    </div>
+  </section>
+
+  {# ── Notices ──────────────────────────────────────────── #}
+  {% if detection_skipped %}
+  <div class="notice">
+    Detection rule search was skipped for this run. Findings are not confirmed detection gaps.
+  </div>
+  {% endif %}
+
+  {% if warnings %}
+  <div class="warnings-section">
+    {% for w in warnings %}{{ warning_item(w) }}{% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── Barre d'outils (filtres) ─────────────────────────── #}
+  <section class="toolbar" aria-label="Filters">
+    <input id="search" type="search" placeholder="Search CVE, product, evidence, rules, techniques">
+    <select id="priorityFilter" aria-label="Priority filter">
+      <option value="">All priorities</option>
+      <option value="critical">Critical</option>
+      <option value="high">High</option>
+      <option value="medium">Medium</option>
+      <option value="low">Low</option>
+      <option value="informational">Informational</option>
+    </select>
+    <select id="detectionFilter" aria-label="Detection filter">
+      <option value="">All detection states</option>
+      <option value="covered">Covered</option>
+      <option value="gap">Detection gap</option>
+    </select>
+    <select id="machineFilter" aria-label="Machine filter">
+      <option value="">All machines</option>
+      {% for ms in products_summary %}
+      <option value="{{ ms.machine_id }}">{{ ms.machine_id }}</option>
+      {% endfor %}
+    </select>
+    <select id="productFilter" aria-label="Product filter">
+      <option value="">All products</option>
+      {% set ns = namespace(seen=[]) %}
+      {% for ms in products_summary %}
+        {% for ps in ms.products %}
+          {% if ps.name not in ns.seen %}
+          <option value="{{ ps.name }}">{{ ps.name }}</option>
+          {% set ns.seen = ns.seen + [ps.name] %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+    </select>
+    <select id="exploitFilter" aria-label="Public exploit filter">
+      <option value="">All CVEs</option>
+      <option value="yes">Public exploit only</option>
+    </select>
+    <button id="resetFilters" type="button">Reset</button>
+  </section>
+
+  <div id="resultCount" class="result-count"></div>
+
+  {# ── Layout principal ─────────────────────────────────── #}
+  <section class="layout">
+    <div>
+      {# Findings groupés par machine puis par produit #}
+      <div id="findings" class="findings">
+        {% for ms in products_summary %}
+          {{ machine_group(ms) }}
+        {% endfor %}
+      </div>
+      <div id="empty" class="empty">No findings match the current filters.</div>
+
+      {# Findings wildcard (non confirmés) #}
+      {% if wildcard_findings %}
+      <details class="panel" style="margin-top: 16px;">
+        <summary><h2>NVD wildcard / no versions ({{ wildcard_findings | length }})</h2></summary>
+        <p class="subtitle">
+          NVD returned these CVEs through a wildcard product CPE without explicit affected versions.
+          Treat them as manual validation items, not confirmed affected findings.
+        </p>
+        <div class="findings">
+          {% for f in wildcard_findings %}
+          <details class="section">
+            <summary>
+              <span class="section-title">
+                {{ f.cve.cve_id }} · {{ f.product.normalized_product_name or f.product.raw_product_name }} {{ f.product.raw_version }}
+              </span>
+            </summary>
+            <div class="description">{{ f.cve.description or "No description" }}</div>
+            <div class="details" style="margin-top: 10px;">
+              {{ detail_cell("Severity", f.cve.severity.value) }}
+              {{ detail_cell("CVSS", f.cve.cvss_score if f.cve.cvss_score is not none else "n/a") }}
+              {{ detail_cell("Affected", f.affected_status.value) }}
+              {{ detail_cell("Mapping Confidence", f.mapping_confidence.value) }}
+            </div>
+          </details>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+
+    {# ── Sidebar ──────────────────────────────────────────── #}
+    <aside class="side">
+      {# Panneau couverture produits #}
+      <section class="panel">
+        <h2>Product Coverage ({{ all_products_summary | length }})</h2>
+        <div class="product-list">
+          {% for p in all_products_summary %}
+          <div class="coverage-item coverage-item--{{ p.support_status }}">
+            <div class="coverage-item-name">{{ p.name }}</div>
+            <div class="coverage-item-meta">
+              {{ p.version }}{% if p.criticality %} · {{ p.criticality }}{% endif %}
+              {% if p.support_status == "end_of_life" %} · EOL {{ p.eol_date }}
+              {% elif p.support_status == "extended_support" %} · Ext. Support until {{ p.eol_date }}
+              {% elif p.support_status == "supported" %} · Premier until {{ p.eol_date }}
+              {% else %} · Support unknown{% endif %}
+            </div>
+            <div class="coverage-item-badges">
+              {% if p.total_findings == 0 %}
+              <span class="badge no-cve" style="font-size:10px;min-height:18px;padding:1px 6px;">✓ No CVEs</span>
+              {% else %}
+                {% for priority in ["critical","high","medium","low"] %}
+                  {% if p.priority_counts.get(priority,0) %}
+                  <span class="badge {{ priority }}" style="font-size:10px;min-height:18px;padding:1px 6px;">
+                    {{ p.priority_counts[priority] }} {{ priority }}
+                  </span>
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+
+      {# Panneau produits #}
+      <section class="panel">
+        <h2>Machines &amp; Products</h2>
+        <div class="product-list">
+          {% for ms in products_summary %}
+          <details class="machine-item">
+            <summary class="machine-item-header" onclick="filterByMachine(this, '{{ ms.machine_id }}')">
+              <span>{{ ms.machine_id }}</span>
+              <span class="machine-item-count">{{ ms.total }}</span>
+            </summary>
+            <div class="machine-item-products">
+              {% for ps in ms.products %}
+              <div class="product-item" data-product="{{ ps.name }}" onclick="filterByProduct(this)">
+                <div class="product-item-name">{{ ps.name }}</div>
+                <div class="product-item-meta">{{ ps.version }}{% if ps.criticality %} · {{ ps.criticality }}{% endif %}</div>
+                <div class="product-item-badges">
+                  {% if ps.support_status == "end_of_life" %}
+                  <span class="badge end_of_life" style="font-size: 10px; min-height: 18px; padding: 1px 6px;">EOL</span>
+                  {% elif ps.support_status == "extended_support" %}
+                  <span class="badge extended_support" style="font-size: 10px; min-height: 18px; padding: 1px 6px;">Ext. Support</span>
+                  {% endif %}
+                  {% for priority in ["critical", "high", "medium", "low"] %}
+                    {% if ps.priority_counts.get(priority, 0) %}
+                    <span class="badge {{ priority }}"
+                          style="font-size: 10px; min-height: 18px; padding: 1px 6px;">
+                      {{ ps.priority_counts[priority] }} {{ priority }}
+                    </span>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+          </details>
+          {% endfor %}
+        </div>
+      </section>
+
+      {# Panneau threat context #}
+      <section class="panel">
+        <h2>Threat Context</h2>
+        <ul class="compact-list">
+          <li>Public exploit signal: {{ threat_summary.public_exploit }}</li>
+          <li>Active exploitation signal: {{ threat_summary.active }}</li>
+          <li>ATT&amp;CK techniques: {{ threat_summary.techniques }}</li>
+        </ul>
+      </section>
+
+      {# Panneau appendix #}
+      <section class="panel">
+        <h2>Appendix</h2>
+        <ul class="compact-list">
+          <li>Provider mode: {{ provider_mode }}</li>
+          <li>Warnings: {{ warnings_count }}</li>
+          <li>Errors: {{ errors_count }}</li>
+          <li>NVD wildcard / no versions: {{ wildcard_findings | length }}</li>
+          <li>Other suppressed: {{ other_suppressed_count }}</li>
+        </ul>
+      </section>
+    </aside>
+  </section>
+</main>
+
+<script>
+  const search          = document.getElementById('search');
+  const priorityFilter  = document.getElementById('priorityFilter');
+  const detectionFilter = document.getElementById('detectionFilter');
+  const productFilter   = document.getElementById('productFilter');
+  const machineFilter   = document.getElementById('machineFilter');
+  const exploitFilter   = document.getElementById('exploitFilter');
+  const resultCount     = document.getElementById('resultCount');
+  const empty           = document.getElementById('empty');
+  const cards           = Array.from(document.querySelectorAll('.finding'));
+  const productGroups   = Array.from(document.querySelectorAll('.product-group'));
+  const machineGroups   = Array.from(document.querySelectorAll('.machine-group'));
+
+  function applyFilters() {
+    const query     = search.value.trim().toLowerCase();
+    const priority  = priorityFilter.value;
+    const detection = detectionFilter.value;
+    const product   = productFilter.value;
+    const machine   = machineFilter.value;
+    const exploit   = exploitFilter.value;
+    let visible = 0;
+
+    for (const card of cards) {
+      const show =
+        (!query     || card.dataset.search.includes(query)) &&
+        (!priority  || card.dataset.priority === priority)  &&
+        (!detection || card.dataset.detection === detection) &&
+        (!product   || card.dataset.product === product)    &&
+        (!machine   || card.dataset.machine === machine)    &&
+        (!exploit   || card.dataset.exploit === exploit);
+      card.style.display = show ? '' : 'none';
+      if (show) visible++;
+    }
+
+    const isFiltering = query || priority || detection || product || machine || exploit;
+    for (const group of productGroups) {
+      const anyVisible = Array.from(group.querySelectorAll('.finding'))
+                               .some(c => c.style.display !== 'none');
+      group.style.display = anyVisible ? '' : 'none';
+      if (isFiltering && anyVisible) group.open = true;
+      if (!isFiltering) group.open = false;
+    }
+    for (const mg of machineGroups) {
+      const anyVisible = Array.from(mg.querySelectorAll('.finding'))
+                              .some(c => c.style.display !== 'none');
+      mg.style.display = anyVisible ? '' : 'none';
+      if (!anyVisible) mg.open = false;
+    }
+
+    resultCount.textContent = `${visible} of ${cards.length} findings shown`;
+    empty.style.display = visible === 0 ? 'block' : 'none';
+  }
+
+  function filterByProduct(el) {
+    const isActive = el.classList.contains('active');
+    document.querySelectorAll('.product-item').forEach(i => i.classList.remove('active'));
+    document.querySelectorAll('.machine-item-header').forEach(i => i.classList.remove('active'));
+    productFilter.value = isActive ? '' : el.dataset.product;
+    machineFilter.value = '';
+    if (!isActive) el.classList.add('active');
+    applyFilters();
+  }
+
+  function filterByMachine(el, machineId) {
+    const isActive = el.classList.contains('active');
+    document.querySelectorAll('.machine-item-header').forEach(i => i.classList.remove('active'));
+    document.querySelectorAll('.product-item').forEach(i => i.classList.remove('active'));
+    machineFilter.value = isActive ? '' : machineId;
+    productFilter.value = '';
+    if (!isActive) el.classList.add('active');
+    applyFilters();
+  }
+
+  document.getElementById('resetFilters').addEventListener('click', () => {
+    search.value = '';
+    priorityFilter.value = '';
+    detectionFilter.value = '';
+    productFilter.value = '';
+    machineFilter.value = '';
+    exploitFilter.value = '';
+    document.querySelectorAll('.product-item').forEach(i => i.classList.remove('active'));
+    document.querySelectorAll('.machine-item-header').forEach(i => i.classList.remove('active'));
+    applyFilters();
+  });
+
+  [search, priorityFilter, detectionFilter, productFilter, machineFilter, exploitFilter].forEach(ctrl => {
+    ctrl.addEventListener('input', applyFilters);
+    ctrl.addEventListener('change', applyFilters);
+  });
+
+  applyFilters();
+
+  function copyCve(btn, cveId) {
+    navigator.clipboard.writeText(cveId).then(() => {
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = 'Copy';
+        btn.classList.remove('copied');
+      }, 1500);
+    });
+  }
+</script>
+</body>
+</html>

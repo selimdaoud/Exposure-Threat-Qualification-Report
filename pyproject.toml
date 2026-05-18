@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oracle-cve-intel"
+version = "0.1.0"
+description = "Oracle CVE threat enrichment CLI"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+oracle-cve-intel = "oracle_cve_intel.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["oracle_cve_intel*"]
