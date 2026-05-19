@@ -44,7 +44,7 @@ def read_csv(path: Path | str) -> list[ProductRecord]:
                     machine_id=machine_id,
                     notes=_clean(row.get("notes")),
                     owner=_clean(row.get("owner")),
-                    criticality=_clean(row.get("criticality")),
+                    tier=_clean(row.get("tier") or row.get("criticality")),
                 )
             )
     return records

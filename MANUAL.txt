@@ -109,7 +109,11 @@ Colonnes obligatoires:
 Colonnes optionnelles:
 
   owner          Proprietaire ou equipe responsable
-  criticality    Niveau de criticite metier (ex: "high", "critical")
+  tier           Niveau de criticite metier (valeur numerique) :
+                   0 = Mission Critical
+                   1 = Critical
+                   2 = Important
+                   3 = Standard
 
 Exemple minimal:
 
@@ -119,10 +123,10 @@ Exemple minimal:
 
 Exemple complet:
 
-  product_name,version,machine_id,notes,owner,criticality
-  Oracle WebLogic Server,12.2.1.4,web001,Internet-facing,platform,high
-  Oracle Database Server,19.3,db001,core database,dba,critical
-  Oracle E-Business Suite,12.2.10,ebs001,ERP production,finance,critical
+  product_name,version,machine_id,notes,owner,tier
+  Oracle WebLogic Server,12.2.1.4,web001,Internet-facing,platform,1
+  Oracle Database Server,19.3,db001,core database,dba,0
+  Oracle E-Business Suite,12.2.10,ebs001,ERP production,finance,1
 
 Les fichiers d'exemple sont disponibles dans:
 
@@ -400,6 +404,8 @@ Ouvrir le fichier suivant dans un navigateur:
 
 Fonctionnalites:
 
+  - Resume executif avec note de Risk Posture (CRITICAL / HIGH / MODERATE / LOW)
+    et les principaux facteurs de risque
   - Recherche texte
   - Filtres par priorite, severite, KEV, exploit public et coverage detection
   - Sections CVE expandables
@@ -408,9 +414,38 @@ Fonctionnalites:
       Detection Rules
       Patch References
       Evidence References
+  - Vue par machine avec proprietaire et niveau de tiering
   - Liens directs vers les references externes
   - Section separee pour les produits sans CVE confirmee (NVD wildcard ou
     version hors support Oracle)
+
+
+Calcul du Risk Posture
+----------------------
+
+La note de Risk Posture est determinee automatiquement. La premiere condition
+correspondante s'applique :
+
+  CRITICAL  Au moins une CVE dans le catalogue CISA KEV (exploitee activement) ;
+            ou produit EOL avec tiering Tier 0 ou Tier 1 et au moins une
+            vulnerabilite Critical non corrigee.
+
+  HIGH      Une ou plusieurs vulnerabilites Critical ; ou plus de 10 findings
+            avec exploit public disponible.
+
+  MODERATE  Une ou plusieurs vulnerabilites High.
+
+  LOW       Aucune des conditions ci-dessus.
+
+Le detection gap n'entre pas dans le calcul du Risk Posture. Les referentiels
+publics de regles (SigmaHQ, Elastic) couvrent peu les produits de couche base
+de donnees ou applicative (Oracle Database, EBS) — l'absence de regle publique
+ne signifie pas que l'environnement n'est pas surveille. Le detection gap reste
+visible dans le resume executif a titre de recommandation operationnelle.
+
+Tiering et posture : le Risk Posture est evalue uniquement sur les assets de
+Tier 0 et Tier 1. Un produit EOL en Tier 2 (Important) ou Tier 3 (Standard)
+ne declenche pas d'escalade de posture vers CRITICAL.
 
 
 Interpretation des signaux
@@ -546,7 +581,8 @@ Le rapport affiche "0 CVEs confirmed" pour un produit avec finding informatif:
   migrer vers une version supportee si applicable.
 
 Une colonne du CSV n'est pas reconnue :
-  Seules product_name et version sont obligatoires. Les colonnes machine_id,
-  notes, owner et criticality sont optionnelles. Toute autre colonne est ignoree
-  silencieusement. La colonne "environment" n'est pas supportee — utiliser
-  "notes" pour les informations d'environnement.
+  Seules product_name, version, machine_id et notes sont obligatoires. Les
+  colonnes owner et tier sont optionnelles. Toute autre colonne est ignoree
+  silencieusement. Les colonnes "environment" et "criticality" ne sont pas
+  supportees — utiliser "notes" pour les informations d'environnement et "tier"
+  (valeur 0-3) pour la criticite metier.

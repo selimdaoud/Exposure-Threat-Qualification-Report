@@ -22,8 +22,9 @@
     .products       list[dict]  Un dict par produit, contenant :
       .name           str         Nom normalisé du produit
       .version        str         Version brute
-      .criticality    str         Criticité (high, medium, …)
-      .meta           str         "version · criticality"
+      .tier           str         Tier number (0–3)
+      .tier_label     str         "Tier N — Label" (e.g. "Tier 1 — Critical")
+      .meta           str         "version · tier_label"
       .priority_counts dict       {"critical": int, …}
       .total          int         Nombre de findings pour ce produit
       .findings       list[dict]  Enriched finding contexts (fc) :
@@ -194,6 +195,9 @@
         <div class="description">{{ f.cve.description or "No description" }}</div>
       </div>
       <div class="badges">
+        {% if f.cve.kev_status %}
+        <span class="badge kev-badge">⚑ KEV</span>
+        {% endif %}
         {% if f.threat_context and f.threat_context.public_exploit %}
         <span class="badge exploit">⚑ Public Exploit</span>
         {% endif %}
@@ -412,6 +416,7 @@
   <summary>
     <div>
       <span class="machine-group-name">{{ ms.machine_id }}</span>
+      {% if ms.tier_label %}<span class="machine-group-tier">{{ ms.tier_label }}</span>{% endif %}
       {% if ms.owner %}<span class="machine-group-owner">{{ ms.owner }}</span>{% endif %}
       <span class="machine-group-chevron">›</span>
     </div>
@@ -653,6 +658,7 @@
     .badge.low       { background: #dbeafe; color: var(--low); }
     .badge.gap            { background: #fee2e2; color: var(--gap); }
     .badge.exploit        { background: #fee2e2; color: var(--critical); border: 1px solid #fca5a5; font-weight: 760; }
+    .badge.kev-badge      { background: #7f1d1d; color: #fff; border: 1px solid #991b1b; font-weight: 760; letter-spacing: 0.04em; }
     .badge.covered        { background: #dcfce7; color: var(--ok); }
     .badge.skipped        { background: #e2e8f0; color: #475569; }
     .badge.end_of_life    { background: #fee2e2; color: var(--critical); border: 1px solid #fca5a5; font-weight: 760; }
@@ -823,6 +829,17 @@
     }
     .machine-group > summary::-webkit-details-marker { display: none; }
     .machine-group-name { font-size: 16px; font-weight: 760; color: white; }
+    .machine-group-tier {
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.9);
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 4px;
+      padding: 1px 7px;
+      margin-left: 10px;
+      letter-spacing: 0.03em;
+    }
     .machine-group-owner {
       font-size: 12px;
       font-weight: 400;
@@ -1154,18 +1171,19 @@
     /* ── Product coverage panel ───────────────────────── */
     .coverage-item {
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 9px 11px;
+      border-radius: 6px;
+      padding: 5px 8px;
       display: grid;
-      gap: 4px;
+      gap: 2px;
     }
-    .coverage-item--end_of_life      { border-left: 4px solid var(--critical); }
-    .coverage-item--extended_support { border-left: 4px solid var(--medium); }
-    .coverage-item--supported        { border-left: 4px solid var(--ok); }
-    .coverage-item--unknown          { border-left: 4px solid var(--muted); }
-    .coverage-item-name   { font-weight: 760; font-size: 13px; }
-    .coverage-item-meta   { color: var(--muted); font-size: 11px; }
-    .coverage-item-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+    .coverage-item--end_of_life      { border-left: 3px solid var(--critical); }
+    .coverage-item--extended_support { border-left: 3px solid var(--medium); }
+    .coverage-item--supported        { border-left: 3px solid var(--ok); }
+    .coverage-item--unknown          { border-left: 3px solid var(--muted); }
+    .coverage-item-name    { font-weight: 760; font-size: 10px; }
+    .coverage-item-meta    { color: var(--muted); font-size: 9px; line-height: 1.3; }
+    .coverage-item-machine { color: var(--muted); font-size: 9px; font-style: italic; }
+    .coverage-item-badges  { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 1px; }
     .badge.no-cve { background: #dcfce7; color: var(--ok); }
 
     /* ── Support card ─────────────────────────────────── */
@@ -1356,25 +1374,23 @@
             <tr>
               <td class="pm-critical">CRITICAL</td>
               <td>Any CVE listed in the CISA KEV catalog (actively exploited in
-              the wild); <em>or</em> Critical/High detection gap above 80%;
-              <em>or</em> an EOL product with business criticality
-              <strong>high</strong> or <strong>critical</strong> and unpatched
-              Critical vulnerabilities.</td>
+              the wild); <em>or</em> an EOL product with tiering
+              <strong>Tier 0</strong> or <strong>Tier 1</strong> and unpatched
+              Critical vulnerabilities. Only Tier 0 and Tier 1 assets are
+              considered for posture escalation.</td>
             </tr>
             <tr>
               <td class="pm-high">HIGH</td>
-              <td>One or more Critical findings; <em>or</em> Critical/High
-              detection gap above 70%; <em>or</em> more than 10 findings with a
-              public exploit available.</td>
+              <td>One or more Critical findings; <em>or</em> more than 10
+              findings with a public exploit available.</td>
             </tr>
             <tr>
               <td class="pm-moderate">MODERATE</td>
-              <td>One or more High findings; <em>or</em> Critical/High detection
-              gap above 50%.</td>
+              <td>One or more High findings.</td>
             </tr>
             <tr>
               <td class="pm-low">LOW</td>
-              <td>Only Medium or Low findings with a detection gap below 30%.</td>
+              <td>Only Medium or Low findings.</td>
             </tr>
           </table>
         </div>
@@ -1516,19 +1532,20 @@
           <div class="coverage-item coverage-item--{{ p.support_status }}">
             <div class="coverage-item-name">{{ p.name }}</div>
             <div class="coverage-item-meta">
-              {{ p.version }}{% if p.criticality %} · {{ p.criticality }}{% endif %}
+              {{ p.version }}{% if p.tier_label %} · {{ p.tier_label }}{% endif %}
               {% if p.support_status == "end_of_life" %} · EOL {{ p.eol_date }}
               {% elif p.support_status == "extended_support" %} · Ext. Support until {{ p.eol_date }}
               {% elif p.support_status == "supported" %} · Premier until {{ p.eol_date }}
               {% else %} · Support unknown{% endif %}
             </div>
+            {% if p.machine_id %}<div class="coverage-item-machine">{{ p.machine_id }}</div>{% endif %}
             <div class="coverage-item-badges">
               {% if p.total_findings == 0 %}
-              <span class="badge no-cve" style="font-size:10px;min-height:18px;padding:1px 6px;">✓ No CVEs</span>
+              <span class="badge no-cve" style="font-size:8px;min-height:14px;padding:1px 5px;">✓ No CVEs</span>
               {% else %}
                 {% for priority in ["critical","high","medium","low"] %}
                   {% if p.priority_counts.get(priority,0) %}
-                  <span class="badge {{ priority }}" style="font-size:10px;min-height:18px;padding:1px 6px;">
+                  <span class="badge {{ priority }}" style="font-size:8px;min-height:14px;padding:1px 5px;">
                     {{ p.priority_counts[priority] }} {{ priority }}
                   </span>
                   {% endif %}
@@ -1554,7 +1571,7 @@
               {% for ps in ms.products %}
               <div class="product-item" data-product="{{ ps.name }}" onclick="filterByProduct(this)">
                 <div class="product-item-name">{{ ps.name }}</div>
-                <div class="product-item-meta">{{ ps.version }}{% if ps.criticality %} · {{ ps.criticality }}{% endif %}</div>
+                <div class="product-item-meta">{{ ps.version }}{% if ps.tier_label %} · {{ ps.tier_label }}{% endif %}</div>
                 <div class="product-item-badges">
                   {% if ps.support_status == "end_of_life" %}
                   <span class="badge end_of_life" style="font-size: 10px; min-height: 18px; padding: 1px 6px;">EOL</span>

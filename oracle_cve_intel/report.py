@@ -12,6 +12,20 @@ from .config import TEMPLATES_DIR
 from .models import AffectedStatus, FindingRecord, Priority, ProductRecord, SupportStatus, to_dict
 from .runtime import RunContext
 
+_TIER_LABELS: dict[str, str] = {
+    "0": "Mission Critical",
+    "1": "Critical",
+    "2": "Important",
+    "3": "Standard",
+}
+
+def _tier_label(tier: str | None) -> str:
+    if not tier:
+        return ""
+    t = tier.strip()
+    label = _TIER_LABELS.get(t, "")
+    return f"Tier {t} — {label}" if label else f"Tier {t}"
+
 
 # ── Public entry points ────────────────────────────────────────────────────
 
@@ -372,11 +386,13 @@ def _build_products_summary(
                 priority_counts = Counter(f.priority for f in group)
                 record = group[0].product
                 pname = record.normalized_product_name or record.raw_product_name
-                meta_parts = [v for v in [record.raw_version, record.criticality] if v]
+                tl = _tier_label(record.tier)
+                meta_parts = [v for v in [record.raw_version, tl] if v]
                 products.append({
                     "name": pname,
                     "version": record.raw_version,
-                    "criticality": record.criticality or "",
+                    "tier": record.tier or "",
+                    "tier_label": tl,
                     "meta": " · ".join(meta_parts),
                     "priority_counts": {p.value: priority_counts[p] for p in Priority},
                     "total": len(group),
@@ -393,11 +409,13 @@ def _build_products_summary(
                 group = wildcard_machines[machine_id][pkey]
                 record = group[0].product
                 pname = record.normalized_product_name or record.raw_product_name
-                meta_parts = [v for v in [record.raw_version, record.criticality] if v]
+                tl = _tier_label(record.tier)
+                meta_parts = [v for v in [record.raw_version, tl] if v]
                 products.append({
                     "name": pname,
                     "version": record.raw_version,
-                    "criticality": record.criticality or "",
+                    "tier": record.tier or "",
+                    "tier_label": tl,
                     "meta": " · ".join(meta_parts),
                     "priority_counts": {p.value: 0 for p in Priority},
                     "total": 0,
@@ -413,9 +431,12 @@ def _build_products_summary(
         machine_findings = [f for ps in machines.get(machine_id, {}).values() for f in ps]
         machine_priority_counts = Counter(f.priority for f in machine_findings)
         machine_owner = next((f.product.owner for f in machine_findings if f.product.owner), None)
+        machine_tier = next((f.product.tier for f in machine_findings if f.product.tier), None)
         result.append({
             "machine_id": machine_id,
             "owner": machine_owner or "",
+            "tier": machine_tier or "",
+            "tier_label": _tier_label(machine_tier),
             "total": len(machine_findings),
             "priority_counts": {p.value: machine_priority_counts[p] for p in Priority},
             "products": products,
@@ -631,7 +652,8 @@ def _build_all_products_summary(
             "name": name,
             "version": p.raw_version,
             "machine_id": p.machine_id or "unknown",
-            "criticality": p.criticality or "",
+            "tier": p.tier or "",
+            "tier_label": _tier_label(p.tier),
             "support_status": p.support_status.value,
             "eol_date": p.eol_date,
             "premier_end": _extract_premier_end(p.support_notes),
@@ -693,20 +715,20 @@ def _build_risk_posture(
     gap_pct = round(ch_gap_count / ch_total * 100) if ch_total else 0
     public_count = sum(1 for f in findings if f.threat_context and f.threat_context.public_exploit)
 
-    _business_critical = {"critical", "high"}
+    _biz_critical_tiers = {"0", "1"}
     seen_eol_biz: set[str] = set()
     for f in findings:
         if f.product.support_status == SupportStatus.END_OF_LIFE:
             key = f"{f.product.normalized_product_name or f.product.raw_product_name}::{f.product.raw_version}"
-            if (f.product.criticality or "").lower() in _business_critical and key not in seen_eol_biz:
+            if (f.product.tier or "").strip() in _biz_critical_tiers and key not in seen_eol_biz:
                 seen_eol_biz.add(key)
     eol_biz_critical_count = len(seen_eol_biz)
 
-    if kev_count > 0 or (critical_count > 0 and gap_pct > 80) or (eol_biz_critical_count > 0 and critical_count > 0):
+    if kev_count > 0 or (eol_biz_critical_count > 0 and critical_count > 0):
         level, css_class = "CRITICAL", "posture-critical"
-    elif critical_count > 0 or gap_pct > 70 or public_count > 10:
+    elif critical_count > 0 or public_count > 10:
         level, css_class = "HIGH", "posture-high"
-    elif high_count > 0 or gap_pct > 50:
+    elif high_count > 0:
         level, css_class = "MODERATE", "posture-moderate"
     else:
         level, css_class = "LOW", "posture-low"
@@ -734,7 +756,7 @@ def _build_risk_posture(
         drivers.append({
             "icon": "◉", "icon_class": "driver-icon-warn",
             "label": "Detection blind spot",
-            "detail": f"{gap_pct}% of Critical/High findings uncovered ({ch_gap_count} / {ch_total})",
+            "detail": f"{gap_pct}% of Critical/High findings lack a publicly known detection rule ({ch_gap_count} / {ch_total})",
             "action": "Validate and deploy SIEM / EDR detection rules this week",
             "action_class": "action-arrow-normal",
         })
@@ -803,24 +825,40 @@ def _provider_mode(run_ctx: RunContext) -> str:
     return "live"
 
 
+def _filter_references(references) -> list:
+    _keep = (
+        "nvd.nist.gov",
+        "oracle.com/security-alerts",
+        "cisa.gov",
+    )
+    seen_urls: set[str] = set()
+    filtered = []
+    for ref in references:
+        url = (ref.url or "").lower()
+        if not any(domain in url for domain in _keep):
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        filtered.append(ref)
+    filtered.sort(key=_reference_rank)
+    return filtered
+
+
 def _primary_references(references) -> list:
-    return sorted(references, key=_reference_rank)[:6]
+    return _filter_references(references)
 
 
-def _overflow_references(references) -> list:
-    return sorted(references, key=_reference_rank)[6:]
+def _overflow_references(_references) -> list:
+    return []
 
 
 def _reference_rank(reference) -> tuple[int, str]:
-    text = f"{reference.label} {reference.url} {reference.source or ''}".lower()
-    if "nvd.nist.gov/vuln/detail" in text:
+    url = (reference.url or "").lower()
+    if "nvd.nist.gov" in url:
         return (0, reference.label)
-    if "oracle.com/security-alerts" in text:
+    if "oracle.com/security-alerts" in url:
         return (1, reference.label)
-    if "cisa.gov" in text:
+    if "cisa.gov" in url:
         return (2, reference.label)
-    if "first.org" in text:
-        return (3, reference.label)
-    if "exploit" in text or "packetstorm" in text or "zerodayinitiative" in text:
-        return (4, reference.label)
     return (9, reference.label)

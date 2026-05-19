@@ -23,6 +23,7 @@ patch references, and evidence references.
 - [Local Detection Rule Index](#local-detection-rule-index)
 - [Analysis Modes](#analysis-modes)
 - [HTML Report](#html-report)
+  - [Risk Posture calculation](#risk-posture-calculation)
 - [Signal Reference](#signal-reference)
 - [Recommended Workflow](#recommended-workflow)
 - [Troubleshooting](#troubleshooting)
@@ -156,7 +157,7 @@ The CSV file must contain the following mandatory columns.
 | Column | Description |
 |---|---|
 | `owner` | Responsible owner or team |
-| `criticality` | Business criticality level (e.g. `high`, `critical`) |
+| `tier` | Business criticality tier: `0` Mission Critical · `1` Critical · `2` Important · `3` Standard |
 
 **Minimal example:**
 
@@ -169,11 +170,20 @@ Oracle Database Server,19.3,db001,core database
 **Full example:**
 
 ```csv
-product_name,version,machine_id,notes,owner,criticality
-Oracle WebLogic Server,12.2.1.4,web001,Internet-facing,platform,high
-Oracle Database Server,19.3,db001,core database,dba,critical
-Oracle E-Business Suite,12.2.10,ebs001,ERP production,finance,critical
+product_name,version,machine_id,notes,owner,tier
+Oracle WebLogic Server,12.2.1.4,web001,Internet-facing,platform,1
+Oracle Database Server,19.3,db001,core database,dba,0
+Oracle E-Business Suite,12.2.10,ebs001,ERP production,finance,1
 ```
+
+**Tier reference:**
+
+| Value | Label |
+|---|---|
+| `0` | Mission Critical |
+| `1` | Critical |
+| `2` | Important |
+| `3` | Standard |
 
 Sample files: `examples/products.csv`, `examples/products3.csv`
 
@@ -459,16 +469,42 @@ Open `REPORT/report.html` in a browser.
 - Executive summary with Risk Posture rating (CRITICAL / HIGH / MODERATE / LOW)
   and key risk drivers
 - Full-text search
+
 - Filters by priority, severity, KEV, public exploit, and detection coverage
 - Expandable CVE sections with:
   - ATT&CK Techniques
   - Detection Rules
   - Patch References
   - Evidence References
-- Machine-group view with owner attribution
+- Machine-group view with owner and tier level
 - Direct links to all external references
 - Separate section for products with no confirmed CVE (NVD wildcard or version
   out of Oracle support)
+
+### Risk Posture calculation
+
+The posture rating is determined by evaluating conditions in order — the first
+match wins:
+
+| Posture | Condition |
+|---|---|
+| **CRITICAL** | At least one KEV (actively exploited CVE) |
+| **CRITICAL** | EOL product with tier 0 or 1 **and** at least one Critical-priority finding |
+| **HIGH** | One or more Critical-priority findings, **or** > 10 findings with a public exploit |
+| **MODERATE** | One or more High-priority findings |
+| **LOW** | None of the above |
+
+Detection gap is intentionally excluded from the posture thresholds. Public
+rule repositories (SigmaHQ, Elastic) have limited coverage for DB-layer and
+application-layer products such as Oracle Database or EBS — absence of a public
+rule does not mean the environment is unmonitored. The detection gap remains
+visible as a driver in the executive summary for operational follow-up.
+
+**Tier and posture:** Risk Posture is evaluated only on Tier 0 and Tier 1
+assets. A product on End-of-Life support escalates posture to CRITICAL only if
+its tier is `0` (Mission Critical) or `1` (Critical) and at least one Critical
+finding exists. Tier `2` (Important) and `3` (Standard) assets are excluded
+from posture escalation.
 
 ---
 
@@ -619,6 +655,6 @@ migrate to a supported release if applicable.
 **A CSV column is not recognized**
 
 Only `product_name`, `version`, `machine_id`, and `notes` are mandatory. The
-columns `owner` and `criticality` are optional. Any other column is silently
-ignored. The `environment` column is not supported — use `notes` for environment
-information instead.
+columns `owner` and `tier` are optional. Any other column is silently ignored.
+The `environment` and `criticality` columns are not supported — use `notes` for
+environment information and `tier` (0–3) for business criticality.

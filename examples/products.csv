@@ -1,7 +1,7 @@
-product_name,version,environment,notes,owner,criticality
-Oracle WebLogic Server,12.2.1.4,prod,customer managed,platform,high
-Oracle Database,19c,prod,core database platform,database,critical
-Oracle Java,8u351,prod,legacy runtime,apps,medium
-Oracle E-Business Suite,12.2.10,prod,business application,erp,critical
-WLS,14.1.1.0,dev,alias test,platform,medium
-Unknown Product,1.0,prod,graceful handling test,unknown,low
+product_name,version,machine_id,notes,owner,tier
+Oracle WebLogic Server,12.2.1.4,web001,customer managed,platform,1
+Oracle Database,19c,db001,core database platform,database,0
+Oracle Java,8u351,app001,legacy runtime,apps,2
+Oracle E-Business Suite,12.2.10,ebs001,business application,erp,1
+WLS,14.1.1.0,web001,alias test,platform,3
+Unknown Product,1.0,unknown001,graceful handling test,unknown,3

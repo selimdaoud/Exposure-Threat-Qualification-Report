@@ -1,5 +1,5 @@
-product_name,version,machine_id,notes,owner,criticality
-Oracle Database Server,12.2.0.1,db001,database for Payement System,Accounting,medium
-Oracle Database Server,19.30,db001,database for HR,HRIS, critical
-Oracle Database Server,23.4.0,db002,database for Reporting,Finance Dept, high
-Oracle E-Business Suite,12.2,ebs001, phased out system,Accounting, Low
+product_name,version,machine_id,notes,owner,tier
+Oracle Database Server,12.2.0.1,db001,database for Payment System,Accounting,0
+Oracle Database Server,19.30,db001,database for HR,HRIS,1
+Oracle Database Server,23.4.0,db002,database for Reporting,Finance Dept,2
+Oracle E-Business Suite,12.2,ebs001,phased out system,Accounting,3

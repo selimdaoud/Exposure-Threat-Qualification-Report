@@ -88,7 +88,7 @@ class ProductRecord:
     machine_id: str | None = None
     notes: str | None = None
     owner: str | None = None
-    criticality: str | None = None
+    tier: str | None = None
     normalization_confidence: ConfidenceLevel = ConfidenceLevel.UNKNOWN
     support_status: SupportStatus = SupportStatus.UNKNOWN
     eol_date: str | None = None
