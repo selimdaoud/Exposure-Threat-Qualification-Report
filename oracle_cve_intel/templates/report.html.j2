@@ -60,10 +60,11 @@
    MACROS — bibliothèque de composants
    ───────────────────────────────────────────── #}
 
-{% macro metric(label, value) %}
+{% macro metric(label, value, subtitle="") %}
 <div class="metric">
   <div class="label">{{ label }}</div>
   <div class="value">{{ value }}</div>
+  {% if subtitle %}<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">{{ subtitle }}</div>{% endif %}
 </div>
 {% endmacro %}
 
@@ -183,6 +184,7 @@
   data-product="{{ fc.product }}"
   data-machine="{{ f.product.machine_id or 'unknown' }}"
   data-exploit="{{ 'yes' if f.threat_context and f.threat_context.public_exploit else 'no' }}"
+  data-kev="{{ 'yes' if f.cve.kev_status else 'no' }}"
   data-search="{{ fc.search_text }}">
   <summary>
     <div class="finding-head">
@@ -201,8 +203,8 @@
         {% if f.threat_context and f.threat_context.public_exploit %}
         <span class="badge exploit">⚑ Public Exploit</span>
         {% endif %}
-        <span class="badge {{ f.priority.value }}">{{ f.priority.value }} · {{ f.priority_score }}</span>
-        <span class="badge {{ f.cve.severity.value }}">{{ f.cve.severity.value }}</span>
+        <span class="badge {{ f.priority.value }}" title="Priority score: {{ f.priority_score }}">Priority: {{ f.priority.value | capitalize }} · {{ f.priority_score }}</span>
+        <span class="badge {{ f.cve.severity.value }}">CVSS Severity: {{ f.cve.severity.value | capitalize }}</span>
         <span class="badge {{ fc.detection_state }}">{{ fc.detection_label }}</span>
       </div>
     </div>
@@ -264,6 +266,38 @@
       </div>
     </details>
     {{ patch_section(fc.patches) }}
+    {% if fc.patch_lag %}
+    <details class="section">
+      <summary><span class="section-title">Patch Lag · <span style="color:var(--accent);font-weight:700;">{{ fc.patch_lag.days }} days</span></span></summary>
+      <div style="padding: 10px 0 4px; font-size: 12px; line-height: 1.6; color: var(--fg);">
+        <table style="border-collapse:collapse; width:100%; font-size:12px;">
+          <tr>
+            <td style="padding:3px 10px 3px 0; color:var(--muted); white-space:nowrap; vertical-align:top;">CVE published</td>
+            <td><a class="link-pill" href="{{ fc.patch_lag.nvd_url }}" target="_blank" rel="noopener noreferrer">{{ fc.patch_lag.published_date }} (NVD)</a></td>
+          </tr>
+          <tr>
+            <td style="padding:3px 10px 3px 0; color:var(--muted); white-space:nowrap; vertical-align:top;">Oracle CPU advisory</td>
+            <td><a class="link-pill" href="{{ fc.patch_lag.cpu_url }}" target="_blank" rel="noopener noreferrer">{{ fc.patch_lag.cpu_date_label }}</a></td>
+          </tr>
+          <tr>
+            <td style="padding:3px 10px 3px 0; color:var(--muted); white-space:nowrap; vertical-align:top;">Lag (days)</td>
+            <td style="font-weight:700; color:var(--accent);">{{ fc.patch_lag.days }} days</td>
+          </tr>
+          <tr>
+            <td style="padding:3px 10px 3px 0; color:var(--muted); white-space:nowrap; vertical-align:top;">Method</td>
+            <td style="color:var(--muted);">Days between NVD publish date and earliest Oracle CPU advisory that addressed this CVE. CPU release date estimated as the 15th of the advisory month. EOL products are excluded from this metric.</td>
+          </tr>
+        </table>
+      </div>
+    </details>
+    {% elif f.product.support_status.value == "end_of_life" %}
+    <details class="section">
+      <summary><span class="section-title">Patch Lag · <span style="color:var(--muted);font-weight:500;">N/A (EOL product)</span></span></summary>
+      <div style="padding: 10px 0 4px; font-size: 12px; color: var(--muted);">
+        Patch lag is not calculated for end-of-life products because Oracle may not have issued a patch.
+      </div>
+    </details>
+    {% endif %}
     <details class="section">
       <summary><span class="section-title">Evidence References</span></summary>
       <div class="links">
@@ -1162,6 +1196,26 @@
       padding: 2px 6px;
       white-space: nowrap;
     }
+    .driver-expand-list .eol-crit-id {
+      font-size: 11px;
+      font-weight: 600;
+      font-family: ui-monospace, monospace;
+      background: #e2e8f0;
+      color: #1e293b;
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+    .driver-expand-list .lag-id {
+      font-size: 11px;
+      font-weight: 600;
+      font-family: ui-monospace, monospace;
+      background: #f0f9ff;
+      color: #0369a1;
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
     @media (max-width: 720px) {
       .exec-drivers { grid-template-columns: 1fr; }
       .exec-drivers-col:first-child { border-right: none; border-bottom: 1px solid var(--line); }
@@ -1305,23 +1359,23 @@
         <span class="exec-summary-title">Executive Summary</span>
         <div class="exec-summary-pills">
           {% if counts.critical %}
-          <span class="badge critical" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ counts.critical }} Critical</span>
+          <span class="badge critical" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ counts.critical }} finding(s) rated Critical priority (composite score)">{{ counts.critical }} Critical-priority</span>
           {% endif %}
           {% if counts.high %}
-          <span class="badge high" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ counts.high }} High</span>
+          <span class="badge high" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ counts.high }} finding(s) rated High priority (composite score)">{{ counts.high }} High-priority</span>
           {% endif %}
           {% if counts.medium %}
-          <span class="badge medium" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ counts.medium }} Medium</span>
+          <span class="badge medium" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ counts.medium }} finding(s) rated Medium priority (composite score)">{{ counts.medium }} Medium-priority</span>
           {% endif %}
           {% if gap_critical_high and total_critical_high %}
           {% set gap_pct = (gap_critical_high / total_critical_high * 100) | round | int %}
-          <span class="badge gap" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ gap_pct }}% Detection Gap</span>
+          <span class="badge gap" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ gap_critical_high }} of {{ total_critical_high }} Critical/High-priority findings have no known detection rule">{{ gap_pct }}% Detection Gap (Crit/High)</span>
           {% endif %}
           {% if eol_products_count %}
-          <span class="badge end_of_life" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ eol_products_count }} EOL</span>
+          <span class="badge end_of_life" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ eol_products_count }} product(s) past end-of-life date with unpatched findings">{{ eol_products_count }} EOL Product{{ 's' if eol_products_count != 1 else '' }}</span>
           {% endif %}
           {% if ext_products_count %}
-          <span class="badge extended_support" style="font-size:11px;min-height:20px;padding:2px 8px;">{{ ext_products_count }} Ext. Support</span>
+          <span class="badge extended_support" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ ext_products_count }} product(s) on Extended Support with unpatched findings">{{ ext_products_count }} Ext. Support Product{{ 's' if ext_products_count != 1 else '' }}</span>
           {% endif %}
         </div>
       </div>
@@ -1347,7 +1401,10 @@
               <details class="driver-expand">
                 <summary>Show CVEs</summary>
                 <div class="driver-expand-list">
-                  {% for id in d.expandable_items %}<span class="{{ d.get('expandable_item_class', 'kev-id') }}">{{ id }}</span>{% endfor %}
+                  {% for item in d.expandable_items %}
+                  {% if item is mapping %}<span class="{{ item.css_class }}">{{ item.text }}</span>
+                  {% else %}<span class="{{ d.get('expandable_item_class', 'kev-id') }}">{{ item }}</span>{% endif %}
+                  {% endfor %}
                 </div>
               </details>
               {% endif %}
@@ -1407,20 +1464,24 @@
 
   {# ── Métriques ────────────────────────────────────────── #}
   <section class="summary" aria-label="Assessment summary">
-    {{ metric("Findings",  total_findings) }}
-    {{ metric("Critical",  counts.critical) }}
-    {{ metric("High",      counts.high) }}
-    {{ metric("Medium",    counts.medium) }}
-    {{ metric("Covered",   covered) }}
-    {{ metric("Gaps" if not detection_skipped else "Detection",
-              gaps   if not detection_skipped else 0) }}
+    {{ metric("CVE Findings",       total_findings,    "CVE × product pairs") }}
+    {{ metric("Critical-priority",  counts.critical,   "composite risk score") }}
+    {{ metric("High-priority",      counts.high,       "composite risk score") }}
+    {{ metric("Medium-priority",    counts.medium,     "composite risk score") }}
+    {{ metric("Detection Covered",  covered,           "findings with a detection rule") }}
+    {{ metric("Detection Gaps"  if not detection_skipped else "Detection Skipped",
+              gaps              if not detection_skipped else 0,
+              "findings with no detection rule" if not detection_skipped else "rules not evaluated this run") }}
     <div class="metric">
       <div class="label">Support Risk</div>
-      <div class="value" style="font-size: {% if eol_products_count > 0 %}24{% else %}24{% endif %}px; color: {% if eol_products_count > 0 %}var(--critical){% elif ext_products_count > 0 %}var(--medium){% else %}var(--ok){% endif %};">
+      <div class="value" style="font-size: 24px; color: {% if eol_products_count > 0 %}var(--critical){% elif ext_products_count > 0 %}var(--medium){% else %}var(--ok){% endif %};">
         {{ eol_products_count + ext_products_count }}
       </div>
       <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">
-        {% if eol_products_count %}{{ eol_products_count }} EOL{% endif %}{% if eol_products_count and ext_products_count %} · {% endif %}{% if ext_products_count %}{{ ext_products_count }} ext.{% endif %}{% if not eol_products_count and not ext_products_count %}all supported{% endif %}
+        products at risk
+        {% if eol_products_count %} · {{ eol_products_count }} EOL{% endif %}
+        {% if ext_products_count %} · {{ ext_products_count }} ext. support{% endif %}
+        {% if not eol_products_count and not ext_products_count %}· all supported{% endif %}
       </div>
     </div>
   </section>
@@ -1472,9 +1533,10 @@
         {% endfor %}
       {% endfor %}
     </select>
-    <select id="exploitFilter" aria-label="Public exploit filter">
+    <select id="exploitFilter" aria-label="Threat signal filter">
       <option value="">All CVEs</option>
       <option value="yes">Public exploit only</option>
+      <option value="kev">KEV only</option>
     </select>
     <button id="resetFilters" type="button">Reset</button>
   </section>
@@ -1649,7 +1711,7 @@
         (!detection || card.dataset.detection === detection) &&
         (!product   || card.dataset.product === product)    &&
         (!machine   || card.dataset.machine === machine)    &&
-        (!exploit   || card.dataset.exploit === exploit);
+        (!exploit   || (exploit === 'kev' ? card.dataset.kev === 'yes' : card.dataset.exploit === exploit));
       card.style.display = show ? '' : 'none';
       if (show) visible++;
     }

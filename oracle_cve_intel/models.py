@@ -106,6 +106,7 @@ class CVERecord:
     kev_status: bool = False
     epss_score: float | None = None
     oracle_advisory_ref: str | None = None
+    published_date: str | None = None  # YYYY-MM-DD from NVD
     references: list[ReferenceRecord] = field(default_factory=list)
 
 

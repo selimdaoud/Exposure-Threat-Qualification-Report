@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import jinja2
@@ -460,6 +460,7 @@ def _finding_context(finding: FindingRecord, detection_skipped: bool) -> dict:
         "evidence_overflow": _overflow_references(evidence),
         "detection_state": detection_state,
         "detection_label": detection_label,
+        "patch_lag": _finding_patch_lag(finding),
         "search_text": _build_search_text(finding, product, techniques, evidence),
     }
 
@@ -560,7 +561,7 @@ def _build_executive_summary(
         "extended_support": ", which is on Extended Support",
     }.get(top.product.support_status.value, "")
     paragraphs.append(
-        f"The highest-priority finding is {top.cve.cve_id} (score {top.priority_score}) "
+        f"The highest-priority finding is {top.cve.cve_id} (Priority score {top.priority_score}) "
         f"affecting {top_product} {top.product.raw_version}{support_clause}."
     )
 
@@ -575,7 +576,7 @@ def _build_executive_summary(
     else:
         paragraphs.append(
             f"{gaps} of {n_cves} findings have no detection logic in place, "
-            f"meaning exploitation would go unnoticed by current tooling."
+            f"meaning exploitation would go unnoticed by current tooling (note: this is expected for Database)."
         )
 
     # ── Para 4: Support health ────────────────────────────────────────────
@@ -604,13 +605,13 @@ def _build_executive_summary(
     # ── Para 5: Call to action ────────────────────────────────────────────
     if critical and high:
         paragraphs.append(
-            f"Immediate remediation is required for the {critical} Critical "
-            f"finding{'s' if critical != 1 else ''}; the {high} High "
+            f"Immediate remediation is required for the {critical} Critical-priority "
+            f"finding{'s' if critical != 1 else ''}; the {high} High-priority "
             f"finding{'s' if high != 1 else ''} should be addressed within standard patch SLA windows."
         )
     elif critical:
         paragraphs.append(
-            f"Immediate remediation is required for the {critical} Critical "
+            f"Immediate remediation is required for the {critical} Critical-priority "
             f"finding{'s' if critical != 1 else ''}."
         )
     elif high:
@@ -701,6 +702,68 @@ def _count_unique_products_by_status(findings: list[FindingRecord], status: Supp
     return len(seen)
 
 
+_CPU_LAG_MONTH: dict[str, int] = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_CPU_URL_DATE_RE = re.compile(r"cpu([a-z]{3})(\d{4})", re.IGNORECASE)
+
+
+def _cpu_advisory_date(url: str) -> date | None:
+    m = _CPU_URL_DATE_RE.search(url)
+    if not m:
+        return None
+    month = _CPU_LAG_MONTH.get(m.group(1).lower())
+    if not month:
+        return None
+    return date(int(m.group(2)), month, 15)
+
+
+def _finding_patch_lag(finding: FindingRecord) -> dict | None:
+    """Return patch lag detail for a single finding, or None if not computable or EOL."""
+    if finding.product.support_status == SupportStatus.END_OF_LIFE:
+        return None
+    if not finding.cve.published_date:
+        return None
+    for patch in finding.patch_references:
+        cpu_date = _cpu_advisory_date(patch.advisory_url or "")
+        if not cpu_date:
+            continue
+        try:
+            pub = date.fromisoformat(finding.cve.published_date)
+        except ValueError:
+            continue
+        lag = (cpu_date - pub).days
+        if lag >= 0:
+            cpu_month = cpu_date.strftime("%B %Y")
+            return {
+                "days": lag,
+                "published_date": finding.cve.published_date,
+                "cpu_date_label": cpu_month,
+                "cpu_url": patch.advisory_url,
+                "nvd_url": next(
+                    (r.url for r in finding.cve.references if "nvd.nist.gov/vuln/detail" in (r.url or "")),
+                    f"https://nvd.nist.gov/vuln/detail/{finding.cve.cve_id}",
+                ),
+            }
+    return None
+
+
+def _collect_patch_lags(findings: list[FindingRecord]) -> list[tuple[str, int]]:
+    """Return (cve_id, lag_days) for each unique CVE with computable lag (EOL products excluded)."""
+    seen: set[str] = set()
+    lags: list[tuple[str, int]] = []
+    for f in findings:
+        cve_id = f.cve.cve_id
+        if cve_id in seen:
+            continue
+        lag_data = _finding_patch_lag(f)
+        if lag_data:
+            seen.add(cve_id)
+            lags.append((cve_id, lag_data["days"]))
+    return lags
+
+
 def _build_risk_posture(
     findings: list[FindingRecord],
     kev_count: int,
@@ -752,6 +815,47 @@ def _build_risk_posture(
             "action_class": "action-arrow-urgent",
         })
 
+    cvss9_non_eol: set[str] = set()
+    cvss9_eol: set[str] = set()
+    for f in findings:
+        if f.cve.cvss_score is not None and f.cve.cvss_score > 9.0:
+            if f.product.support_status == SupportStatus.END_OF_LIFE:
+                cvss9_eol.add(f.cve.cve_id)
+            else:
+                cvss9_non_eol.add(f.cve.cve_id)
+    # CVEs that affect both EOL and supported products count as non-EOL
+    eol_only_cvss9 = cvss9_eol - cvss9_non_eol
+    if cvss9_non_eol or eol_only_cvss9:
+        n_non_eol = len(cvss9_non_eol)
+        n_eol = len(eol_only_cvss9)
+        eol_clause = f" (+{n_eol} EOL)" if n_eol else ""
+        tagged_items = (
+            [{"text": cid, "css_class": "crit-id"} for cid in sorted(cvss9_non_eol)]
+            + [{"text": cid, "css_class": "eol-crit-id"} for cid in sorted(eol_only_cvss9)]
+        )
+        drivers.append({
+            "icon": "◉", "icon_class": "driver-icon-warn",
+            "label": "CVSS > 9.0",
+            "detail": f"{n_non_eol} CVE{'s' if n_non_eol != 1 else ''} with critical severity score{eol_clause}",
+            "expandable_items": tagged_items,
+            "action": "Prioritize patching for maximum-severity vulnerabilities",
+            "action_class": "action-arrow-normal",
+        })
+
+    patch_lags = _collect_patch_lags(findings)
+    if patch_lags:
+        mean_lag = round(sum(d for _, d in patch_lags) / len(patch_lags))
+        lag_items = [f"{cid} ({days}d)" for cid, days in sorted(patch_lags, key=lambda x: x[1], reverse=True)]
+        drivers.append({
+            "icon": "◉", "icon_class": "driver-icon-warn",
+            "label": "Patch lag",
+            "detail": f"Avg. {mean_lag} days to patch ({len(patch_lags)} CVE{'s' if len(patch_lags) != 1 else ''})",
+            "expandable_items": lag_items,
+            "expandable_item_class": "lag-id",
+            "action": "Use lag data to calibrate patch SLA windows with your vendor",
+            "action_class": "action-arrow-normal",
+        })
+
     if ch_gap_count > 0 and ch_total > 0:
         drivers.append({
             "icon": "◉", "icon_class": "driver-icon-warn",
@@ -790,8 +894,8 @@ def _build_risk_posture(
                 crit_ids.append(f.cve.cve_id)
         drivers.append({
             "icon": "◉", "icon_class": "driver-icon-warn",
-            "label": "Critical unmitigated",
-            "detail": f"{critical_count} finding{'s' if critical_count != 1 else ''} with no patch applied",
+            "label": "Critical priority",
+            "detail": f"{critical_count} finding{'s' if critical_count != 1 else ''} rated Critical priority",
             "expandable_items": crit_ids,
             "expandable_item_class": "crit-id",
             "action": "Assign remediation owners, set patch SLA, track in ticket system",
@@ -807,7 +911,7 @@ def _build_risk_posture(
         tooltip_parts.append(f"{eol_count} EOL product{'s' if eol_count != 1 else ''} with unpatched vulnerabilities")
     tooltip = f"{level}: " + " · ".join(tooltip_parts) if tooltip_parts else level
 
-    return {"level": level, "css_class": css_class, "drivers": drivers[:4], "tooltip": tooltip}
+    return {"level": level, "css_class": css_class, "drivers": drivers[:6], "tooltip": tooltip}
 
 
 # ── Shared utilities ───────────────────────────────────────────────────────

@@ -129,6 +129,7 @@ class RealCVEEnricher:
             cvss_score=cve.cvss_score if cve.cvss_score is not None else nvd_cve.cvss_score,
             cvss_vector=cve.cvss_vector or nvd_cve.cvss_vector,
             cwe=cve.cwe or nvd_cve.cwe,
+            published_date=cve.published_date or nvd_cve.published_date,
             references=_dedupe_refs(cve.references + nvd_cve.references),
         )
 

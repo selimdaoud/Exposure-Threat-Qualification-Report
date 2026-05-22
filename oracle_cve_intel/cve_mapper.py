@@ -339,6 +339,7 @@ class MockCVEMapper:
                         cve_id=f"CVE-2024-{index:04d}",
                         description=f"Mock critical vulnerability affecting {product.normalized_product_name}.",
                         severity=Severity.CRITICAL if index % 2 else Severity.HIGH,
+                        published_date=f"2023-{(index % 12) + 1:02d}-15",
                         references=[
                             ReferenceRecord(
                                 label="NVD CVE detail",
@@ -374,6 +375,7 @@ class MockCVEMapper:
                         cve_id=f"CVE-2023-{index:04d}",
                         description=f"Mock potentially applicable vulnerability for {product.normalized_product_name}.",
                         severity=Severity.MEDIUM,
+                        published_date=f"2022-{(index % 12) + 1:02d}-15",
                         references=[
                             ReferenceRecord(
                                 label="NVD CVE detail",
@@ -637,6 +639,7 @@ def _cve_from_nvd(cve_data: dict) -> CVERecord:
             source="NVD",
         ),
     )
+    raw_published = cve_data.get("published", "")
     return CVERecord(
         cve_id=cve_id,
         description=description,
@@ -645,6 +648,7 @@ def _cve_from_nvd(cve_data: dict) -> CVERecord:
         cvss_vector=vector,
         cwe=_cwe_from_nvd(cve_data),
         references=references,
+        published_date=raw_published[:10] if raw_published and len(raw_published) >= 10 else None,
     )
 
 
@@ -662,8 +666,10 @@ def _cvss_from_nvd(cve_data: dict) -> tuple[Severity, float | None, str | None]:
         values = metrics.get(key)
         if not values:
             continue
-        metric = values[0].get("cvssData", {})
-        base_severity = values[0].get("baseSeverity") or metric.get("baseSeverity")
+        # Prefer the NVD Primary score; fall back to first entry if no Primary exists.
+        entry = next((v for v in values if v.get("type") == "Primary"), values[0])
+        metric = entry.get("cvssData", {})
+        base_severity = entry.get("baseSeverity") or metric.get("baseSeverity")
         return _severity_from_text(base_severity), metric.get("baseScore"), metric.get("vectorString")
     return Severity.INFORMATIONAL, None, None
 
@@ -759,10 +765,12 @@ def _mock_patch_reference(product: ProductRecord, cve_id: str, confirmed: bool) 
     product_name = product.normalized_product_name or product.raw_product_name
     version = product.raw_version
     fixed_version = _mock_fixed_version(product.normalized_version_for_cpe or version)
+    year = cve_id[4:8] if len(cve_id) >= 8 else "2024"
+    advisory_url = f"https://www.oracle.com/security-alerts/cpuapr{year}.html"
     return PatchReferenceRecord(
         source="Oracle CPU mock",
-        advisory_title="Oracle Critical Patch Update mock advisory",
-        advisory_url="https://www.oracle.com/security-alerts/",
+        advisory_title=f"Oracle Critical Patch Update Advisory – April {year}",
+        advisory_url=advisory_url,
         product=product_name,
         affected_versions=[version],
         fixed_version=fixed_version if confirmed else None,
