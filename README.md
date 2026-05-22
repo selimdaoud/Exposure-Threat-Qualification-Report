@@ -467,14 +467,21 @@ Open `REPORT/report.html` in a browser.
 **Features:**
 
 - Executive summary with Risk Posture rating (CRITICAL / HIGH / MODERATE / LOW)
-  and key risk drivers
+  and key risk drivers, including:
+  - KEV — CVEs actively exploited in the wild (CISA catalog)
+  - CVSS > 9.0 — maximum-severity CVEs, split between active and EOL-only products
+  - Patch Lag — average days between CVE publication and Oracle CPU advisory,
+    with a per-CVE breakdown; EOL products are excluded from this metric
+  - Detection blind spot — % of Critical/High findings with no known detection rule
+  - EOL product — products past end-of-life with unpatched findings
+  - Critical priority — findings rated Critical by the composite priority score
 - Full-text search
-
-- Filters by priority, severity, KEV, public exploit, and detection coverage
+- Filters by priority, detection coverage, product, machine, KEV, and public exploit
 - Expandable CVE sections with:
   - ATT&CK Techniques
   - Detection Rules
-  - Patch References
+  - Patch References with Oracle CPU advisory links
+  - Patch Lag — per-CVE lag calculation with method note and references
   - Evidence References
 - Machine-group view with owner and tier level
 - Direct links to all external references
@@ -527,6 +534,20 @@ MITRE ATT&CK techniques associated by threat context or inference.
 **Detection Rules**
 Rules found in the local detection index, matched by CVE ID or associated
 ATT&CK technique.
+
+**CVSS Score**
+The highest available CVSS version is used (4.0 → 3.1 → 3.0 → 2.0). When
+multiple scorers exist for the same version (e.g. NVD and the CNA submitter),
+the **NVD Primary** score is preferred. The CNA Secondary score is used only
+when no Primary score exists.
+
+**Patch Lag**
+Per-CVE metric computed as the number of days between the NVD publish date and
+the earliest Oracle CPU advisory that addressed the CVE. CPU release dates are
+approximated as the 15th of the advisory month. EOL products are excluded — the
+metric targets products under active Oracle support only. The executive summary
+shows the average lag across all CVEs where both dates are available; each CVE
+card shows the individual breakdown with references.
 
 **Patch References**
 CVE-specific Oracle CPU advisory, extracted automatically from NVD references
