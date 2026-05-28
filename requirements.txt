@@ -1,2 +1,3 @@
 gitpython
 jinja2
+pdfplumber     # required by scripts/fetch_oracle_support_dates.py
