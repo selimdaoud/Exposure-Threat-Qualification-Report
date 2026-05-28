@@ -649,10 +649,25 @@ def _build_all_products_summary(
             continue
         seen.add(key)
         counts = finding_counts.get(key, Counter())
+        crit   = counts[Priority.CRITICAL]
+        high   = counts[Priority.HIGH]
+        medium = counts[Priority.MEDIUM]
+        if crit:
+            risk_level, risk_class = "Critical", "risk-critical"
+        elif high:
+            risk_level, risk_class = "High",     "risk-high"
+        elif medium:
+            risk_level, risk_class = "Moderate", "risk-moderate"
+        elif sum(counts.values()):
+            risk_level, risk_class = "Low",      "risk-low"
+        else:
+            risk_level, risk_class = "None",     "risk-none"
+
         result.append({
             "name": name,
             "version": p.raw_version,
             "machine_id": p.machine_id or "unknown",
+            "owner": p.owner or "",
             "tier": p.tier or "",
             "tier_label": _tier_label(p.tier),
             "support_status": p.support_status.value,
@@ -660,6 +675,8 @@ def _build_all_products_summary(
             "premier_end": _extract_premier_end(p.support_notes),
             "total_findings": sum(counts.values()),
             "priority_counts": {pr.value: counts[pr] for pr in Priority},
+            "risk_level": risk_level,
+            "risk_class": risk_class,
         })
     return result
 

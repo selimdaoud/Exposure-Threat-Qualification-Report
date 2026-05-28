@@ -1073,13 +1073,108 @@
     .posture-low      { background: #dcfce7; color: var(--ok);       border-color: #86efac; }
 
     /* ── Drivers / actions grid ───────────────────────── */
+    /* ── Key Business Drivers table ───────────────────────── */
+    .kbd-details { margin-bottom: 16px; }
+    .kbd-details > summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      margin-bottom: 8px;
+      user-select: none;
+    }
+    .kbd-details > summary::-webkit-details-marker { display: none; }
+    .kbd-details > summary::before { content: "▸ "; }
+    .kbd-details[open] > summary::before { content: "▾ "; }
+    .kbd-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .kbd-table th {
+      background: #f8fafc;
+      font-size: 11px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+      padding: 7px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+    .kbd-table td {
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+    }
+    .kbd-table tr:last-child td { border-bottom: none; }
+    .kbd-table tr:hover td { background: rgba(0,0,0,.02); }
+    .kbd-tier {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 1px 6px;
+      white-space: nowrap;
+    }
+    .kbd-tier-0 { background: #fee2e2; color: var(--critical); }
+    .kbd-tier-1 { background: #ffedd5; color: var(--high); }
+    .kbd-tier-2 { background: #fef9c3; color: #854d0e; }
+    .kbd-tier-3 { background: #f1f5f9; color: var(--muted); }
+    .kbd-tier-x { background: #f1f5f9; color: var(--muted); }
+    .kbd-risk {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 1px 8px;
+      white-space: nowrap;
+    }
+    .risk-critical  { background: #fee2e2; color: var(--critical); }
+    .risk-high      { background: #ffedd5; color: var(--high); }
+    .risk-moderate  { background: #fef9c3; color: #854d0e; }
+    .risk-low       { background: #dcfce7; color: #15803d; }
+    .risk-none      { background: #f1f5f9; color: var(--muted); }
+    .kbd-support {
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 4px;
+      padding: 1px 6px;
+      white-space: nowrap;
+    }
+    .kbd-eol      { background: #fee2e2; color: var(--critical); }
+    .kbd-ext      { background: #ffedd5; color: var(--high); }
+    .kbd-ok       { background: #dcfce7; color: #15803d; }
+    .kbd-unknown  { background: #f1f5f9; color: var(--muted); }
+    /* ─────────────────────────────────────────────────────── */
+    .exec-drivers-details { margin-bottom: 16px; }
+    .exec-drivers-details > summary.exec-drivers-summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      margin-bottom: 8px;
+      user-select: none;
+    }
+    .exec-drivers-details > summary.exec-drivers-summary::-webkit-details-marker { display: none; }
+    .exec-drivers-details > summary.exec-drivers-summary::before { content: "▸ "; }
+    .exec-drivers-details[open] > summary.exec-drivers-summary::before { content: "▾ "; }
     .exec-drivers {
       display: grid;
       grid-template-columns: 1fr 1fr;
       border: 1px solid var(--line);
       border-radius: 8px;
       overflow: hidden;
-      margin-bottom: 16px;
     }
     .exec-drivers-col { padding: 14px 16px; }
     .exec-drivers-col:first-child {
@@ -1398,10 +1493,70 @@
       </div>
     </summary>
     <div class="exec-summary-body">
+      {% if all_products_summary %}
+      <details class="kbd-details">
+        <summary>Key Business Drivers</summary>
+        <table class="kbd-table">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Version</th>
+              <th>Machine</th>
+              <th>Owner</th>
+              <th>Tier</th>
+              <th>Support</th>
+              <th>Risk</th>
+              <th style="text-align:center;">Findings</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in all_products_summary %}
+            <tr>
+              <td style="font-weight:600;">{{ p.name }}</td>
+              <td style="font-family:ui-monospace,monospace;font-size:11px;">{{ p.version }}</td>
+              <td style="color:var(--muted);font-size:11px;">{{ p.machine_id }}</td>
+              <td style="color:var(--muted);font-size:11px;">{{ p.owner or '—' }}</td>
+              <td>
+                {% if p.tier %}
+                <span class="kbd-tier kbd-tier-{{ p.tier }}">{{ p.tier_label }}</span>
+                {% else %}
+                <span class="kbd-tier kbd-tier-x">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if p.support_status == 'end_of_life' %}
+                <span class="kbd-support kbd-eol">EOL{% if p.eol_date %} · {{ p.eol_date }}{% endif %}</span>
+                {% elif p.support_status == 'extended_support' %}
+                <span class="kbd-support kbd-ext">Ext. Support{% if p.eol_date %} · {{ p.eol_date }}{% endif %}</span>
+                {% elif p.support_status == 'supported' %}
+                <span class="kbd-support kbd-ok">Supported{% if p.premier_end %} · {{ p.premier_end }}{% endif %}</span>
+                {% else %}
+                <span class="kbd-support kbd-unknown">Unknown</span>
+                {% endif %}
+              </td>
+              <td><span class="kbd-risk {{ p.risk_class }}">{{ p.risk_level }}</span></td>
+              <td style="text-align:center;">
+                {% set pc = p.priority_counts %}
+                {% if pc.critical %}<span class="badge critical" style="font-size:10px;padding:1px 5px;margin:0 1px;">{{ pc.critical }} C</span>{% endif %}
+                {% if pc.high %}<span class="badge high" style="font-size:10px;padding:1px 5px;margin:0 1px;">{{ pc.high }} H</span>{% endif %}
+                {% if pc.medium %}<span class="badge medium" style="font-size:10px;padding:1px 5px;margin:0 1px;">{{ pc.medium }} M</span>{% endif %}
+                {% if not pc.critical and not pc.high and not pc.medium %}
+                <span style="color:var(--muted);font-size:11px;">{{ p.total_findings or '—' }}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+      {% endif %}
+
       {% if risk_posture.drivers %}
+      <details class="exec-drivers-details">
+        <summary class="exec-drivers-summary">Key Technical Drivers</summary>
       <div class="exec-drivers">
         <div class="exec-drivers-col">
-          <h3>Key Drivers</h3>
+          <h3>Drivers</h3>
           {% for d in risk_posture.drivers %}
           <div class="exec-driver-row">
             <span class="{{ d.icon_class }}">{{ d.icon }}</span>
@@ -1432,6 +1587,7 @@
           {% endfor %}
         </div>
       </div>
+      </details>
       <details class="posture-method">
         <summary>How is the Risk Posture determined?</summary>
         <div class="posture-method-body">
