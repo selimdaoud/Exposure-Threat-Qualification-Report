@@ -40,3 +40,4 @@ CACHE_TTL = {
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "cache"
 ALIAS_FILE = PROJECT_ROOT / "data" / "product_aliases.json"
 CPE_MAP_FILE = PROJECT_ROOT / "data" / "cpe_map.json"
+ORACLE_SUPPORT_DATES_FILE = PROJECT_ROOT / "data" / "oracle_support_dates.json"
