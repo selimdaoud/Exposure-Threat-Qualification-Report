@@ -1216,6 +1216,16 @@
       padding: 2px 6px;
       white-space: nowrap;
     }
+    .driver-expand-list .exploit-id {
+      font-size: 11px;
+      font-weight: 680;
+      font-family: ui-monospace, monospace;
+      background: #fff7ed;
+      color: #c2410c;
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
     @media (max-width: 720px) {
       .exec-drivers { grid-template-columns: 1fr; }
       .exec-drivers-col:first-child { border-right: none; border-bottom: 1px solid var(--line); }
@@ -1438,18 +1448,41 @@
             </tr>
             <tr>
               <td class="pm-high">HIGH</td>
-              <td>One or more Critical findings; <em>or</em> more than 10
-              findings with a public exploit available.</td>
+              <td>One or more Critical-priority findings; <em>or</em> more than
+              10 findings with a public exploit available.</td>
             </tr>
             <tr>
               <td class="pm-moderate">MODERATE</td>
-              <td>One or more High findings.</td>
+              <td>One or more High-priority findings.</td>
             </tr>
             <tr>
               <td class="pm-low">LOW</td>
-              <td>Only Medium or Low findings.</td>
+              <td>Only Medium or Low-priority findings.</td>
             </tr>
           </table>
+          <div style="margin-top: 12px; font-weight: 680; font-size: 12px;">Asset Tiering</div>
+          <table style="margin-top: 4px;">
+            <tr>
+              <td style="white-space:nowrap; font-weight:700; color:var(--critical); padding:3px 10px 3px 0;">Tier 0 — Mission Critical</td>
+              <td style="font-size:12px;">Core production systems whose failure would cause immediate business stoppage or regulatory breach (e.g. primary ERP, core database cluster).</td>
+            </tr>
+            <tr>
+              <td style="white-space:nowrap; font-weight:700; color:var(--high); padding:3px 10px 3px 0;">Tier 1 — Critical</td>
+              <td style="font-size:12px;">High-importance systems whose failure causes significant operational impact within hours (e.g. internet-facing middleware, authentication services).</td>
+            </tr>
+            <tr>
+              <td style="white-space:nowrap; font-weight:700; color:var(--medium); padding:3px 10px 3px 0;">Tier 2 — Important</td>
+              <td style="font-size:12px;">Supporting systems that degrade business operations but have workarounds or failover capacity (e.g. reporting servers, batch jobs).</td>
+            </tr>
+            <tr>
+              <td style="white-space:nowrap; font-weight:700; color:var(--muted); padding:3px 10px 3px 0;">Tier 3 — Standard</td>
+              <td style="font-size:12px;">Non-critical systems with limited blast radius (e.g. dev/test environments, internal tooling). Not considered for posture escalation.</td>
+            </tr>
+          </table>
+          <div style="margin-top: 8px; font-size: 11px; color: var(--muted);">
+            Tier is assigned in the input CSV (<code>tier</code> column). Only Tier 0 and Tier 1
+            assets trigger CRITICAL posture escalation via the EOL rule.
+          </div>
         </div>
       </details>
       {% endif %}

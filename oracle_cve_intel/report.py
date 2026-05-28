@@ -902,6 +902,23 @@ def _build_risk_posture(
             "action_class": "action-arrow-normal",
         })
 
+    seen_exploit: set[str] = set()
+    exploit_ids: list[str] = []
+    for f in findings:
+        if f.threat_context and f.threat_context.public_exploit and f.cve.cve_id not in seen_exploit:
+            seen_exploit.add(f.cve.cve_id)
+            exploit_ids.append(f.cve.cve_id)
+    if exploit_ids:
+        drivers.append({
+            "icon": "⚑", "icon_class": "driver-icon-warn",
+            "label": "Public exploit",
+            "detail": f"{len(exploit_ids)} CVE{'s' if len(exploit_ids) != 1 else ''} with a publicly available exploit",
+            "expandable_items": exploit_ids,
+            "expandable_item_class": "exploit-id",
+            "action": "Prioritise patching and restrict network exposure for affected assets",
+            "action_class": "action-arrow-normal",
+        })
+
     tooltip_parts = []
     if kev_count > 0:
         tooltip_parts.append(f"{kev_count} KEV finding{'s' if kev_count != 1 else ''} present")
@@ -911,7 +928,7 @@ def _build_risk_posture(
         tooltip_parts.append(f"{eol_count} EOL product{'s' if eol_count != 1 else ''} with unpatched vulnerabilities")
     tooltip = f"{level}: " + " · ".join(tooltip_parts) if tooltip_parts else level
 
-    return {"level": level, "css_class": css_class, "drivers": drivers[:6], "tooltip": tooltip}
+    return {"level": level, "css_class": css_class, "drivers": drivers[:7], "tooltip": tooltip}
 
 
 # ── Shared utilities ───────────────────────────────────────────────────────
