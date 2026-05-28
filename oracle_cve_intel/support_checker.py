@@ -139,12 +139,16 @@ def _match_release(version: str, releases: dict) -> tuple[str, dict] | None:
     )
 
     # 2 & 3. Prefix matching (handles "12.2.x" wildcards)
+    # Boundary guard: after the matched prefix the next character must be "."
+    # or the string must end — prevents "1" matching "15.1.1.0.0".
     v_base = v.rstrip(".x*")
     for norm_key, orig_key in candidates:
         k_base = norm_key.rstrip(".x*")
         if not k_base or not v_base:
             continue
-        if v_base.startswith(k_base) or k_base.startswith(v_base):
+        if v_base.startswith(k_base) and (len(v_base) == len(k_base) or v_base[len(k_base)] == "."):
+            return orig_key, releases[orig_key]
+        if k_base.startswith(v_base) and (len(k_base) == len(v_base) or k_base[len(v_base)] == "."):
             return orig_key, releases[orig_key]
 
     # 4. Major.minor match
