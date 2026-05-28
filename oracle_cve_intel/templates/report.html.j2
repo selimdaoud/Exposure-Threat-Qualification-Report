@@ -1075,6 +1075,38 @@
     /* ── Drivers / actions grid ───────────────────────── */
     /* ── Key Business Drivers table ───────────────────────── */
     .kbd-details { margin-bottom: 16px; }
+    /* Shared toggle bar used by all three exec summary sub-sections */
+    .exec-section-toggle {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      margin-bottom: 10px;
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 680;
+      color: var(--ink);
+      user-select: none;
+      transition: background .15s;
+    }
+    .exec-section-toggle:hover { background: #f1f5f9; }
+    .exec-section-toggle::-webkit-details-marker { display: none; }
+    .exec-section-toggle::before {
+      content: "›";
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--accent);
+      transition: transform .15s;
+      display: inline-block;
+      width: 12px;
+      text-align: center;
+    }
+    details[open] > .exec-section-toggle::before { transform: rotate(90deg); }
     .kbd-details > summary {
       list-style: none;
       cursor: pointer;
@@ -1495,26 +1527,22 @@
     <div class="exec-summary-body">
       {% if all_products_summary %}
       <details class="kbd-details">
-        <summary>Key Business Drivers</summary>
+        <summary class="exec-section-toggle">Key Business Drivers</summary>
         <table class="kbd-table">
           <thead>
             <tr>
+              <th>Owner</th>
+              <th>Tier</th>
               <th>Product</th>
               <th>Version</th>
               <th>Machine</th>
-              <th>Owner</th>
-              <th>Tier</th>
               <th>Support</th>
               <th>Risk</th>
-              <th style="text-align:center;">Findings</th>
             </tr>
           </thead>
           <tbody>
             {% for p in all_products_summary %}
             <tr>
-              <td style="font-weight:600;">{{ p.name }}</td>
-              <td style="font-family:ui-monospace,monospace;font-size:11px;">{{ p.version }}</td>
-              <td style="color:var(--muted);font-size:11px;">{{ p.machine_id }}</td>
               <td style="color:var(--muted);font-size:11px;">{{ p.owner or '—' }}</td>
               <td>
                 {% if p.tier %}
@@ -1523,6 +1551,9 @@
                 <span class="kbd-tier kbd-tier-x">—</span>
                 {% endif %}
               </td>
+              <td style="font-weight:600;">{{ p.name }}</td>
+              <td style="font-family:ui-monospace,monospace;font-size:11px;">{{ p.version }}</td>
+              <td style="color:var(--muted);font-size:11px;">{{ p.machine_id }}</td>
               <td>
                 {% if p.support_status == 'end_of_life' %}
                 <span class="kbd-support kbd-eol">EOL{% if p.eol_date %} · {{ p.eol_date }}{% endif %}</span>
@@ -1535,15 +1566,6 @@
                 {% endif %}
               </td>
               <td><span class="kbd-risk {{ p.risk_class }}">{{ p.risk_level }}</span></td>
-              <td style="text-align:center;">
-                {% set pc = p.priority_counts %}
-                {% if pc.critical %}<span class="badge critical" style="font-size:10px;padding:1px 5px;margin:0 1px;">{{ pc.critical }} C</span>{% endif %}
-                {% if pc.high %}<span class="badge high" style="font-size:10px;padding:1px 5px;margin:0 1px;">{{ pc.high }} H</span>{% endif %}
-                {% if pc.medium %}<span class="badge medium" style="font-size:10px;padding:1px 5px;margin:0 1px;">{{ pc.medium }} M</span>{% endif %}
-                {% if not pc.critical and not pc.high and not pc.medium %}
-                <span style="color:var(--muted);font-size:11px;">{{ p.total_findings or '—' }}</span>
-                {% endif %}
-              </td>
             </tr>
             {% endfor %}
           </tbody>
@@ -1553,7 +1575,7 @@
 
       {% if risk_posture.drivers %}
       <details class="exec-drivers-details">
-        <summary class="exec-drivers-summary">Key Technical Drivers</summary>
+        <summary class="exec-section-toggle exec-drivers-summary">Key Technical Drivers</summary>
       <div class="exec-drivers">
         <div class="exec-drivers-col">
           <h3>Drivers</h3>
@@ -1589,7 +1611,7 @@
       </div>
       </details>
       <details class="posture-method">
-        <summary>How is the Risk Posture determined?</summary>
+        <summary class="exec-section-toggle">How is the Risk Posture determined?</summary>
         <div class="posture-method-body">
           The Risk Posture is a single-signal rating computed automatically from
           the findings in this report. The highest matching level applies.
