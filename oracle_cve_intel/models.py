@@ -75,6 +75,7 @@ class PatchReferenceRecord:
     patch_availability_url: str | None = None
     notes: str | None = None
     confidence: ConfidenceLevel = ConfidenceLevel.UNKNOWN
+    patch_type: str = "cpu"  # "cpu" | "cspu"
 
 
 @dataclass

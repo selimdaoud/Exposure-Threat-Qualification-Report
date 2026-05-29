@@ -41,3 +41,41 @@ DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "cache"
 ALIAS_FILE = PROJECT_ROOT / "data" / "product_aliases.json"
 CPE_MAP_FILE = PROJECT_ROOT / "data" / "cpe_map.json"
 ORACLE_SUPPORT_DATES_FILE = PROJECT_ROOT / "data" / "oracle_support_dates.json"
+
+
+# ── Host Risk Score configuration ─────────────────────────────────────────────
+# All scoring parameters are defined here so they can be tuned in one place.
+# Changes here propagate to the Risk Exposure Matrix, the KBD popup, and the
+# "How is the Risk Posture determined?" reference table in the HTML report.
+
+# Per-finding priority weights (base score)
+HOST_SCORE_WEIGHTS: dict[str, int] = {
+    "critical": 40,
+    "high":     10,
+    "medium":    3,
+    "low":       1,
+}
+
+# Per-CVE signal bonuses (added on top of base score)
+HOST_SCORE_SIGNALS: dict[str, int] = {
+    "kev":     30,   # CVE actively exploited (CISA KEV)
+    "cspu":    20,   # Oracle emergency CSPU advisory
+    "eol":     15,   # CVE on EOL product — no vendor patch will ever be issued
+    "exploit": 10,   # Publicly available exploit
+}
+
+# Business-criticality multiplier applied to (base + signals)
+HOST_SCORE_TIER_MULTIPLIERS: dict[str, float] = {
+    "0": 2.5,   # Tier 0 — Mission Critical
+    "1": 2.0,   # Tier 1 — Critical
+    "2": 1.5,   # Tier 2 — Important
+    "3": 1.0,   # Tier 3 — Standard
+}
+
+# Score → column label thresholds (first match wins, descending order)
+HOST_SCORE_THRESHOLDS: list[tuple[str, int]] = [
+    ("Critical",  70),
+    ("High",      40),
+    ("Moderate",  10),
+    ("Low",        0),
+]

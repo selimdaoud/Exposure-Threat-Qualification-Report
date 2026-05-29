@@ -32,10 +32,10 @@ def read_csv(path: Path | str) -> list[ProductRecord]:
                 raise InputParserError(f"Row {index}: product_name is required")
             if not version:
                 raise InputParserError(f"Row {index}: version is required")
-            machine_id = _clean(row.get("machine_id"))
+            machine_id = _clean(row.get("host") or row.get("machine_id"))
             if not machine_id:
                 machine_counter += 1
-                machine_id = f"machine_{machine_counter:03d}"
+                machine_id = f"host_{machine_counter:03d}"
             records.append(
                 ProductRecord(
                     input_id=f"row-{index - 1:03d}",

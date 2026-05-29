@@ -117,7 +117,7 @@ def analyze(args: argparse.Namespace) -> int:
             progress("report", "OK - JSON export written.")
         if html_path:
             progress("report", f"Writing HTML report to {html_path} ...")
-            write_html(report_findings, html_path, run_ctx, suppressed, products, customer=args.customer)
+            write_html(report_findings, html_path, run_ctx, suppressed, products, customer=args.customer, cache_dir=cache.cache_dir)
             progress("report", "OK - HTML report written.")
         log_path = (html_path or json_path or _report_path("report")).with_suffix(".log")
         progress("done", f"Run complete. Log written to {log_path}.")

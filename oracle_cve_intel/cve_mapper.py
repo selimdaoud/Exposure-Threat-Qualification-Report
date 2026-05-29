@@ -363,7 +363,8 @@ class MockCVEMapper:
                         ),
                     ],
                     patch_references=[
-                        _mock_patch_reference(product, f"CVE-2024-{index:04d}", confirmed=True)
+                        _mock_patch_reference(product, f"CVE-2024-{index:04d}", confirmed=True,
+                                              use_cspu=(index == 1))
                     ],
                     confidence_level=ConfidenceLevel.HIGH,
                 )
@@ -761,15 +762,26 @@ def _oracle_patch_placeholder(product: ProductRecord, cve_id: str, confidence: C
     )
 
 
-def _mock_patch_reference(product: ProductRecord, cve_id: str, confirmed: bool) -> PatchReferenceRecord:
+def _mock_patch_reference(
+    product: ProductRecord, cve_id: str, confirmed: bool, use_cspu: bool = False
+) -> PatchReferenceRecord:
     product_name = product.normalized_product_name or product.raw_product_name
     version = product.raw_version
     fixed_version = _mock_fixed_version(product.normalized_version_for_cpe or version)
-    year = cve_id[4:8] if len(cve_id) >= 8 else "2024"
-    advisory_url = f"https://www.oracle.com/security-alerts/cpuapr{year}.html"
+    if use_cspu:
+        advisory_url = "https://www.oracle.com/security-alerts/cspumay2026.html"
+        advisory_title = "Oracle Critical Security Patch Update Advisory – May 2026"
+        source = "Oracle CSPU mock"
+        patch_type = "cspu"
+    else:
+        year = cve_id[4:8] if len(cve_id) >= 8 else "2024"
+        advisory_url = f"https://www.oracle.com/security-alerts/cpuapr{year}.html"
+        advisory_title = f"Oracle Critical Patch Update Advisory – April {year}"
+        source = "Oracle CPU mock"
+        patch_type = "cpu"
     return PatchReferenceRecord(
-        source="Oracle CPU mock",
-        advisory_title=f"Oracle Critical Patch Update Advisory – April {year}",
+        source=source,
+        advisory_title=advisory_title,
         advisory_url=advisory_url,
         product=product_name,
         affected_versions=[version],
@@ -778,6 +790,7 @@ def _mock_patch_reference(product: ProductRecord, cve_id: str, confirmed: bool) 
         patch_name=f"{product_name} security update for {cve_id}",
         notes="Mock patch reference. Real implementation must verify the exact patch ID and fixed version against the matching Oracle CPU table.",
         confidence=ConfidenceLevel.MEDIUM if confirmed else ConfidenceLevel.LOW,
+        patch_type=patch_type,
     )
 
 

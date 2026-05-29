@@ -53,6 +53,10 @@ def score(finding: FindingRecord) -> tuple[int, str]:
         total += 5
         factors.append("potentially affected +5")
 
+    if any(getattr(pr, "patch_type", "cpu") == "cspu" for pr in finding.patch_references):
+        total += 20
+        factors.append("Oracle CSPU (emergency patch) +20")
+
     if finding.detection_gap:
         total += 10
         factors.append("no detection found +10")
@@ -106,6 +110,15 @@ def _build_narrative(finding: FindingRecord) -> str:
         exploitation.append("associated with a publicly available exploit")
     if exploitation:
         sentences.append("It is " + _join_and(exploitation) + ".")
+
+    cspu_patches = [pr for pr in finding.patch_references if getattr(pr, "patch_type", "cpu") == "cspu"]
+    if cspu_patches:
+        advisory = cspu_patches[0].advisory_title or "an Oracle CSPU advisory"
+        sentences.append(
+            f"Oracle issued an emergency Critical Security Patch Update (CSPU) for this CVE via {advisory}, "
+            "indicating Oracle assessed it as too critical to wait for the next quarterly CPU. "
+            "Apply this patch immediately."
+        )
 
     if finding.cve.epss_score is not None:
         pct = f"{finding.cve.epss_score:.0%}"

@@ -1,4 +1,4 @@
-product_name,version,machine_id,notes,owner,tier
+product_name,version,host,notes,owner,tier
 Oracle Database Server,12.2.0.1,db001,database for Payment System,Accounting,0
 Oracle Database Server,19.30,db001,database for HR,HRIS,1
 Oracle Database Server,23.4.0,db002,database for Reporting,Finance Dept,2

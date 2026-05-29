@@ -16,7 +16,15 @@ _MONTH_NAMES = {
 }
 _MONTH_ORDER = {m: i for i, m in enumerate(_MONTH_NAMES, 1)}
 
-_ORACLE_CPU_RE = re.compile(r"oracle\.com.*/(?:security-alerts|technetwork/security-advisory)/cpu([a-z]{3})(\d{4})", re.IGNORECASE)
+# Matches both CPU (quarterly) and CSPU (monthly) advisory URLs.
+_ORACLE_CPU_RE = re.compile(
+    r"oracle\.com.*/(?:security-alerts|technetwork/security-advisory)/c(?:s)?pu([a-z]{3})(\d{4})",
+    re.IGNORECASE,
+)
+
+
+def _is_cspu(url: str) -> bool:
+    return bool(re.search(r"/cspu", url, re.IGNORECASE))
 
 # Maps normalized product name substrings (lowercase) to the <h4 id="AppendixXXX"> section
 # found in Oracle CPU advisory HTML pages.
@@ -65,8 +73,9 @@ class OraclePatchResolver:
         if not patch_availability_url:
             note_parts.append("Obtain the exact patch bundle from My Oracle Support (patch ID and fixed version require MOS access).")
 
+        is_cspu = _is_cspu(advisory_url)
         return PatchReferenceRecord(
-            source="Oracle CPU advisory",
+            source="Oracle CSPU advisory" if is_cspu else "Oracle CPU advisory",
             advisory_title=advisory_title,
             advisory_url=advisory_url,
             product=product_name,
@@ -77,6 +86,7 @@ class OraclePatchResolver:
             patch_availability_url=patch_availability_url,
             notes=" ".join(note_parts),
             confidence=confidence,
+            patch_type="cspu" if is_cspu else "cpu",
         )
 
     def _patch_availability_url(self, advisory_url: str, product_name: str) -> str | None:
@@ -150,20 +160,34 @@ class OraclePatchResolver:
         return confirmed, all_urls
 
     def _recent_advisory_urls_from_index(self, min_year: int = 2017) -> list[str]:
-        """Return Oracle CPU advisory URLs from min_year to now (quarterly: jan/apr/jul/oct).
+        """Return Oracle CPU (quarterly) + CSPU (monthly, from 2026) advisory URLs.
 
+        CSPUs are released on the third Tuesday of each month. For the current month
+        we only include the CSPU URL if that date has already passed.
         The Oracle security alerts index page is JavaScript-rendered so we generate
-        the predictable quarterly URLs instead.
+        the predictable URLs directly.
         """
         import datetime
         now = datetime.date.today()
+        all_months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
         quarters = [("jan", 1), ("apr", 4), ("jul", 7), ("oct", 10)]
+        _CSPU_START_YEAR = 2026
         urls: list[str] = []
         for year in range(min_year, now.year + 1):
             for month_abbr, month_num in quarters:
                 if year == now.year and month_num > now.month:
                     break
                 urls.append(f"https://www.oracle.com/security-alerts/cpu{month_abbr}{year}.html")
+            if year >= _CSPU_START_YEAR:
+                for i, month_abbr in enumerate(all_months):
+                    month_num = i + 1
+                    if year == now.year and month_num > now.month:
+                        break
+                    # Only include if the third Tuesday of that month has passed
+                    if year == now.year and month_num == now.month:
+                        if now < _third_tuesday(year, month_num):
+                            break
+                    urls.append(f"https://www.oracle.com/security-alerts/cspu{month_abbr}{year}.html")
         urls.reverse()  # newest first
         return urls
 
@@ -240,6 +264,13 @@ class OraclePatchResolver:
         return data.get("rows", [])
 
 
+def _third_tuesday(year: int, month: int) -> "datetime.date":
+    import datetime
+    first = datetime.date(year, month, 1)
+    days_to_first_tuesday = (1 - first.weekday()) % 7
+    return first + datetime.timedelta(days=days_to_first_tuesday + 14)
+
+
 def _normalize_url(url: str) -> str:
     return re.sub(r"(?<=oracle\.com)/+", "/", url)
 
@@ -271,7 +302,8 @@ def _patch_link_label(product_name: str, advisory_url: str) -> str:
     if m:
         month = _MONTH_NAMES.get(m.group(1).lower(), m.group(1).capitalize())
         year = m.group(2)
-        return f"{product_name} – Oracle CPU advisory {month} {year}"
+        kind = "CSPU" if _is_cspu(advisory_url) else "CPU"
+        return f"{product_name} – Oracle {kind} advisory {month} {year}"
     return product_name
 
 
@@ -280,7 +312,8 @@ def _title_from_url(url: str) -> str:
     if m:
         month = _MONTH_NAMES.get(m.group(1).lower(), m.group(1).capitalize())
         year = m.group(2)
-        return f"Oracle Critical Patch Update Advisory – {month} {year}"
+        kind = "Critical Security Patch Update" if _is_cspu(url) else "Critical Patch Update"
+        return f"Oracle {kind} Advisory – {month} {year}"
     m2 = re.search(r"alert-([a-z0-9-]+)", url, re.IGNORECASE)
     if m2:
         return f"Oracle Security Alert – {m2.group(1).upper()}"
@@ -288,8 +321,8 @@ def _title_from_url(url: str) -> str:
 
 
 def _advisory_id_from_url(url: str) -> str | None:
-    m = re.search(r"cpu([a-z]{3}\d{4})", url, re.IGNORECASE)
-    return f"cpu{m.group(1).lower()}" if m else None
+    m = re.search(r"(c(?:s)?pu)([a-z]{3}\d{4})", url, re.IGNORECASE)
+    return f"{m.group(1).lower()}{m.group(2).lower()}" if m else None
 
 
 def _product_section_id(product_name: str) -> str | None:

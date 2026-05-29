@@ -197,6 +197,9 @@
         <div class="description">{{ f.cve.description or "No description" }}</div>
       </div>
       <div class="badges">
+        {% if fc.cspu_patched %}
+        <span class="badge cspu-badge">⚡ CSPU</span>
+        {% endif %}
         {% if f.cve.kev_status %}
         <span class="badge kev-badge">⚑ KEV</span>
         {% endif %}
@@ -342,6 +345,11 @@
     <span class="badge" style="background:#dcfce7;color:var(--ok);">Premier Support</span>
     {% else %}
     <span class="badge">Unknown</span>
+    {% endif %}
+    {% if ps.support_url %}
+    <a href="{{ ps.support_url }}" target="_blank" rel="noopener noreferrer" class="link-pill" style="font-size:10px;margin-left:auto;">
+      {% if 'endoflife.date' in ps.support_url %}endoflife.date ↗{% else %}Oracle Lifetime Support ↗{% endif %}
+    </a>
     {% endif %}
   </div>
   <div>
@@ -692,6 +700,7 @@
     .badge.low       { background: #dbeafe; color: var(--low); }
     .badge.gap            { background: #fee2e2; color: var(--gap); }
     .badge.exploit        { background: #fee2e2; color: var(--critical); border: 1px solid #fca5a5; font-weight: 760; }
+    .badge.cspu-badge     { background: #1e3a5f; color: #fff; border: 1px solid #1e40af; font-weight: 760; letter-spacing: 0.04em; }
     .badge.kev-badge      { background: #7f1d1d; color: #fff; border: 1px solid #991b1b; font-weight: 760; letter-spacing: 0.04em; }
     .badge.covered        { background: #dcfce7; color: var(--ok); }
     .badge.skipped        { background: #e2e8f0; color: #475569; }
@@ -1174,6 +1183,44 @@
     .risk-moderate  { background: #fef9c3; color: #854d0e; }
     .risk-low       { background: #dcfce7; color: #15803d; }
     .risk-none      { background: #f1f5f9; color: var(--muted); }
+    /* host-score-based column placement colours — aligned with heatmap */
+    .kbd-risk-critical { background: #fee2e2; color: var(--critical); }
+    .kbd-risk-high     { background: #ffedd5; color: var(--high); }
+    .kbd-risk-moderate { background: #fef9c3; color: #854d0e; }
+    .kbd-risk-low      { background: #dcfce7; color: #15803d; }
+    /* score popup */
+    .kbd-score-cell { position: relative; }
+    .kbd-score-wrapper { position: relative; display: inline-block; }
+    .kbd-score-badge { cursor: pointer; user-select: none; }
+    .kbd-score-badge:hover { opacity: .82; }
+    .kbd-score-popup {
+      display: none;
+      position: fixed;
+      z-index: 9999;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.13);
+      padding: 12px 14px;
+      min-width: 270px;
+      font-size: 12px;
+    }
+    .kbd-score-popup.open { display: block; }
+    .kbd-score-popup-title {
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--ink);
+      margin-bottom: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .kbd-score-table { width: 100%; border-collapse: collapse; }
+    .kbd-score-table td { padding: 2px 4px; }
+    .kbd-score-table td:first-child { color: var(--muted); }
+    .kbd-score-table td:last-child { text-align: right; font-family: ui-monospace, monospace; font-weight: 600; }
+    .kbd-score-section td { font-weight: 700; color: var(--ink) !important; padding-top: 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+    .kbd-score-subtotal td { border-top: 1px solid var(--border); color: var(--muted) !important; font-style: italic; }
+    .kbd-score-total td { border-top: 2px solid var(--border); font-weight: 700; padding-top: 5px; color: var(--ink) !important; }
     .kbd-support {
       font-size: 11px;
       font-weight: 600;
@@ -1293,6 +1340,65 @@
     .driver-expand > summary::-webkit-details-marker { display: none; }
     .driver-expand > summary::before { content: "▸ "; }
     .driver-expand[open] > summary::before { content: "▾ "; }
+    /* nested owner level */
+    .driver-owner-expand {
+      margin: 5px 0 2px 0;
+      border-left: 2px solid #d1d5db;
+      padding-left: 8px;
+    }
+    .driver-owner-expand > summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 11px;
+      color: #374151;
+      font-weight: 600;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 0;
+    }
+    .driver-owner-expand > summary::-webkit-details-marker { display: none; }
+    .driver-owner-expand > summary::before { content: "▸ "; font-size: 10px; color: #9ca3af; }
+    .driver-owner-expand[open] > summary::before { content: "▾ "; }
+    .driver-owner-count {
+      background: #f3f4f6;
+      border-radius: 10px;
+      padding: 0 6px;
+      font-size: 10px;
+      color: #6b7280;
+      font-weight: 500;
+    }
+    /* nested machine level */
+    .driver-machine-expand {
+      margin: 2px 0 2px 10px;
+      border-left: 2px dashed #e5e7eb;
+      padding-left: 8px;
+    }
+    .driver-machine-expand > summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 10.5px;
+      color: #6b7280;
+      font-weight: 500;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 0;
+    }
+    .driver-machine-expand > summary::-webkit-details-marker { display: none; }
+    .driver-machine-expand > summary::before { content: "▸ "; font-size: 9px; color: #d1d5db; }
+    .driver-machine-expand[open] > summary::before { content: "▾ "; }
+    .driver-machine-label { font-family: ui-monospace, monospace; }
+    .driver-machine-count {
+      background: #f9fafb;
+      border-radius: 8px;
+      padding: 0 5px;
+      font-size: 9.5px;
+      color: #9ca3af;
+      font-weight: 500;
+    }
     .driver-expand-list {
       margin: 5px 0 0;
       padding: 7px 10px;
@@ -1303,6 +1409,17 @@
       flex-wrap: wrap;
       gap: 4px;
     }
+    .driver-expand-list .cspu-id {
+      font-size: 11px;
+      font-weight: 680;
+      font-family: ui-monospace, monospace;
+      background: #dbeafe;
+      color: #1e40af;
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+    .driver-icon-cspu { color: #1e40af; font-size: 13px; margin-top: 2px; }
     .driver-expand-list .kev-id {
       font-size: 11px;
       font-weight: 680;
@@ -1353,6 +1470,179 @@
       padding: 2px 6px;
       white-space: nowrap;
     }
+    .driver-expand-list .eol-perm-id {
+      font-size: 11px;
+      font-weight: 600;
+      font-family: ui-monospace, monospace;
+      background: #1e293b;
+      color: #f1f5f9;
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+    .driver-icon-eol { color: #64748b; font-size: 13px; margin-top: 2px; }
+    /* ── Scope line ─────────────────────────────────────── */
+    .exec-scope-line {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .exec-scope-item { display: flex; align-items: center; gap: 4px; }
+    .exec-scope-value { font-weight: 700; color: var(--ink); }
+    .exec-headline {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+    /* ── Owner × Risk heatmap ──────────────────────────── */
+    .heatmap-wrapper { overflow-x: auto; margin-top: 10px; display: flex; justify-content: center; }
+    .heatmap-table { border-collapse: collapse; font-size: 12px; width: 560px; table-layout: fixed; outline: 2px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .hm-head {
+      width: 140px;
+      padding: 6px 8px 8px;
+      text-align: center;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      border-bottom: 3px solid transparent;
+    }
+    .hm-head--critical { color: var(--critical); border-bottom-color: var(--critical); }
+    .hm-head--high     { color: var(--high);     border-bottom-color: var(--high); }
+    .hm-head--moderate { color: var(--medium);   border-bottom-color: var(--medium); }
+    .hm-head--low      { color: var(--ok);       border-bottom-color: var(--ok); }
+    .hm-col-cell {
+      width: 140px;
+      min-height: 140px;
+      padding: 8px 6px;
+      vertical-align: top;
+      border: 1px solid var(--border);
+    }
+    .hm-col-cell--critical { background: rgba(180,35,24,.03); }
+    .hm-col-cell--high     { background: rgba(234,88,12,.03); }
+    .hm-col-cell--moderate { background: rgba(202,138,4,.02); }
+    .hm-col-cell--low      { background: rgba(22,163,74,.02); }
+    .hm-col-empty          { background: #fafafa; }
+    /* card */
+    .hm-owner-card {
+      position: relative;
+      border-radius: 6px;
+      padding: 14px 8px 8px;
+      margin-bottom: 8px;
+      border: 2px solid transparent;
+      text-align: center;
+    }
+    .hm-owner-card--critical { background: rgba(180,35,24,.07); border-color: rgba(180,35,24,.30); }
+    .hm-owner-card--high     { background: rgba(234,88,12,.07); border-color: rgba(234,88,12,.30); }
+    .hm-owner-card--moderate { background: rgba(202,138,4,.07); border-color: rgba(202,138,4,.30); }
+    .hm-owner-card--low      { background: rgba(22,163,74,.07); border-color: rgba(22,163,74,.30); }
+    /* badge circle — top right */
+    .hm-card-badge {
+      position: absolute;
+      top: -9px;
+      right: -9px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 8px;
+      font-weight: 700;
+      color: #fff;
+      border: 2px solid #fff;
+    }
+    .hm-owner-card--critical .hm-card-badge { background: var(--critical); }
+    .hm-owner-card--high     .hm-card-badge { background: var(--high); }
+    .hm-owner-card--moderate .hm-card-badge { background: var(--medium); }
+    .hm-owner-card--low      .hm-card-badge { background: var(--ok); }
+    .hm-owner-name {
+      font-weight: 700;
+      font-size: 11px;
+      margin-bottom: 1px;
+    }
+    .hm-owner-card--critical .hm-owner-name { color: var(--critical); }
+    .hm-owner-card--high     .hm-owner-name { color: var(--high); }
+    .hm-owner-card--moderate .hm-owner-name { color: #92400e; }
+    .hm-owner-card--low      .hm-owner-name { color: #166534; }
+    .hm-card-divider {
+      border: none;
+      border-top: 1px solid currentColor;
+      opacity: 0.2;
+      margin: 7px 0;
+    }
+    .hm-host-name {
+      font-family: ui-monospace, monospace;
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .hm-tier {
+      font-family: inherit;
+      font-size: 9px;
+      font-weight: 600;
+      background: #f1f5f9;
+      color: #475467;
+      border-radius: 3px;
+      padding: 0 4px;
+    }
+    .hm-cve-count {
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .hm-eol-badge {
+      display: inline-block;
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      background: #1e293b;
+      color: #f1f5f9;
+      border-radius: 3px;
+      padding: 1px 6px;
+      margin-bottom: 6px;
+    }
+    .hm-signals {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 3px;
+    }
+    .hm-sig {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+    .hm-sig-cspu    { background: #dbeafe; color: #1e40af; }
+    .hm-sig-kev     { background: #fee2e2; color: var(--critical); }
+    .hm-sig-exploit { background: #fff7ed; color: #c2410c; }
+    .hm-sig-cvss9   { background: #ffedd5; color: var(--high); }
+    .hm-empty       { font-size: 20px; color: #e5e7eb; display: block; text-align: center; margin-top: 60px; }
+    .heatmap-legend {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 10px;
+      font-size: 10px;
+    }
+    .heatmap-legend-label { color: var(--muted); }
+    .heatmap-legend-item  { font-weight: 700; }
+    .heatmap-legend-sep   { color: var(--muted); }
+    /* ── Freshness badges ───────────────────────────────── */
+    .freshness-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 6px; }
+    .freshness-table td { padding: 3px 6px; border-bottom: 1px solid var(--border); }
+    .freshness-table td:first-child { color: var(--muted); }
+    .freshness-ok  { color: #16a34a; font-weight: 600; }
+    .freshness-stale { color: #b45309; font-weight: 600; }
     @media (max-width: 720px) {
       .exec-drivers { grid-template-columns: 1fr; }
       .exec-drivers-col:first-child { border-right: none; border-bottom: 1px solid var(--line); }
@@ -1494,22 +1784,20 @@
     <summary>
       <div class="exec-summary-left">
         <span class="exec-summary-title">Executive Summary</span>
+        <div class="exec-scope-line">
+          <span class="exec-scope-item"><span class="exec-scope-value">{{ scope.hosts }}</span> host{{ 's' if scope.hosts != 1 else '' }}</span>
+          <span class="exec-scope-item"><span class="exec-scope-value">{{ scope.products }}</span> distinct product{{ 's' if scope.products != 1 else '' }}</span>
+          <span class="exec-scope-item"><span class="exec-scope-value">{{ scope.deployments }}</span> deployment{{ 's' if scope.deployments != 1 else '' }} assessed</span>
+        </div>
+        {% if risk_headline %}
+        <div class="exec-headline">{{ risk_headline }}</div>
+        {% endif %}
         <div class="exec-summary-pills">
-          {% if counts.critical %}
-          <span class="badge critical" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ counts.critical }} finding(s) rated Critical priority (composite score)">{{ counts.critical }} Critical-priority</span>
-          {% endif %}
-          {% if counts.high %}
-          <span class="badge high" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ counts.high }} finding(s) rated High priority (composite score)">{{ counts.high }} High-priority</span>
-          {% endif %}
-          {% if counts.medium %}
-          <span class="badge medium" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ counts.medium }} finding(s) rated Medium priority (composite score)">{{ counts.medium }} Medium-priority</span>
-          {% endif %}
-          {% if gap_critical_high and total_critical_high %}
-          {% set gap_pct = (gap_critical_high / total_critical_high * 100) | round | int %}
-          <span class="badge gap" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ gap_critical_high }} of {{ total_critical_high }} Critical/High-priority findings have no known detection rule">{{ gap_pct }}% Detection Gap (Crit/High)</span>
-          {% endif %}
+          {% for pill in product_risk_pills %}
+          <span class="badge {{ pill.badge_class }}" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ pill.tooltip }}">{{ pill.count }} {{ pill.label }} deployment{{ 's' if pill.count != 1 else '' }}</span>
+          {% endfor %}
           {% if eol_products_count %}
-          <span class="badge end_of_life" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ eol_products_count }} product(s) past end-of-life date with unpatched findings">{{ eol_products_count }} EOL Product{{ 's' if eol_products_count != 1 else '' }}</span>
+          <span class="badge end_of_life" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ eol_products_count }} product(s) past end-of-life date with unpatched findings">{{ eol_products_count }} EOL Product{{ 's' if eol_products_count != 1 else '' }}{% if oldest_eol_year %} · since {{ oldest_eol_year }}{% endif %}</span>
           {% endif %}
           {% if ext_products_count %}
           <span class="badge extended_support" style="font-size:11px;min-height:20px;padding:2px 8px;" title="{{ ext_products_count }} product(s) on Extended Support with unpatched findings">{{ ext_products_count }} Ext. Support Product{{ 's' if ext_products_count != 1 else '' }}</span>
@@ -1525,6 +1813,53 @@
       </div>
     </summary>
     <div class="exec-summary-body">
+      {% if owner_risk_heatmap.columns %}
+      <details class="heatmap-details" open>
+        <summary class="exec-section-toggle">Risk Exposure Matrix — Owner × Risk Level</summary>
+        <div class="heatmap-wrapper">
+          <table class="heatmap-table">
+            <thead>
+              <tr>
+                {% for col in owner_risk_heatmap.columns %}
+                <th class="hm-head hm-head--{{ col.css_level }}">{{ col.level }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                {% for col in owner_risk_heatmap.columns %}
+                <td class="hm-col-cell hm-col-cell--{{ col.css_level }}{% if not col.owners %} hm-col-empty{% endif %}">
+                  {% if col.owners %}
+                    {% for card in col.owners %}
+                    <div class="hm-owner-card hm-owner-card--{{ col.css_level }}">
+                      <div class="hm-card-badge" title="Host Risk Score: {{ card.score }} · {{ card.count }} CVE{{ 's' if card.count != 1 else '' }} · score = (priority counts + KEV/CSPU/exploit signals) × tier multiplier">{{ card.score }}</div>
+                      <div class="hm-owner-name">{{ card.owner }}</div>
+                      <hr class="hm-card-divider">
+                      <div class="hm-host-name">{{ card.host }}{% if card.tier %} · <span class="hm-tier">{{ card.tier }}</span>{% endif %}</div>
+                      <div class="hm-cve-count">{{ card.count }} CVE{{ 's' if card.count != 1 else '' }}</div>
+                      {% if card.eol_date %}
+                      <div class="hm-eol-badge">EOL · {{ card.eol_date }}</div>
+                      {% endif %}
+                      <div class="hm-signals">
+                        {% if card.cspu > 0 %}<span class="hm-sig hm-sig-cspu">⚡ {{ card.cspu }} CSPU</span>{% endif %}
+                        {% if card.kev > 0 %}<span class="hm-sig hm-sig-kev">⚑ {{ card.kev }} KEV</span>{% endif %}
+                        {% if card.exploit > 0 %}<span class="hm-sig hm-sig-exploit">● {{ card.exploit }} exploit</span>{% endif %}
+                        {% if card.cvss9 > 0 %}<span class="hm-sig hm-sig-cvss9">▲ {{ card.cvss9 }} CVSS&gt;9</span>{% endif %}
+                      </div>
+                    </div>
+                    {% endfor %}
+                  {% else %}
+                  <span class="hm-empty">—</span>
+                  {% endif %}
+                </td>
+                {% endfor %}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+      {% endif %}
+
       {% if all_products_summary %}
       <details class="kbd-details">
         <summary class="exec-section-toggle">Key Business Drivers</summary>
@@ -1535,9 +1870,9 @@
               <th>Tier</th>
               <th>Product</th>
               <th>Version</th>
-              <th>Machine</th>
+              <th>Host</th>
               <th>Support</th>
-              <th>Risk</th>
+              <th>Host Score</th>
             </tr>
           </thead>
           <tbody>
@@ -1565,7 +1900,39 @@
                 <span class="kbd-support kbd-unknown">Unknown</span>
                 {% endif %}
               </td>
-              <td><span class="kbd-risk {{ p.risk_class }}">{{ p.risk_level }}</span></td>
+              <td class="kbd-score-cell">
+                {% if p.host_score %}
+                {% set sc = p.host_score_components %}
+                <div class="kbd-score-wrapper">
+                  <span class="kbd-risk kbd-risk-{{ p.host_column_css }} kbd-score-badge"
+                        onclick="toggleScorePopup(this)">{{ p.host_column }} &#9432;</span>
+                  <div class="kbd-score-popup">
+                    <div class="kbd-score-popup-title">Host Risk Score: {{ p.host_score }}</div>
+                    <table class="kbd-score-table">
+                      <tr class="kbd-score-section"><td colspan="2">Findings Score</td></tr>
+                      {% if sc.n_crit %}<tr><td>Critical findings</td><td>{{ sc.n_crit }} × 40 = {{ sc.n_crit * 40 }}</td></tr>{% endif %}
+                      {% if sc.n_high %}<tr><td>High findings</td><td>{{ sc.n_high }} × 10 = {{ sc.n_high * 10 }}</td></tr>{% endif %}
+                      {% if sc.n_med  %}<tr><td>Medium findings</td><td>{{ sc.n_med }} × 3 = {{ sc.n_med * 3 }}</td></tr>{% endif %}
+                      {% if sc.n_low  %}<tr><td>Low findings</td><td>{{ sc.n_low }} × 1 = {{ sc.n_low }}</td></tr>{% endif %}
+                      <tr class="kbd-score-subtotal"><td>Base subtotal</td><td>{{ sc.base }}</td></tr>
+                      {% if sc.signals > 0 %}
+                      <tr class="kbd-score-section"><td colspan="2">Signal Score</td></tr>
+                      {% if sc.n_kev     %}<tr><td>KEV CVEs</td><td>{{ sc.n_kev }} × 30 = {{ sc.n_kev * 30 }}</td></tr>{% endif %}
+                      {% if sc.n_cspu    %}<tr><td>CSPU CVEs</td><td>{{ sc.n_cspu }} × 20 = {{ sc.n_cspu * 20 }}</td></tr>{% endif %}
+                      {% if sc.n_eol     %}<tr><td>EOL Status</td><td>{{ sc.n_eol }} × 15 = {{ sc.n_eol * 15 }}</td></tr>{% endif %}
+                      {% if sc.n_exploit %}<tr><td>Public exploits</td><td>{{ sc.n_exploit }} × 10 = {{ sc.n_exploit * 10 }}</td></tr>{% endif %}
+                      <tr class="kbd-score-subtotal"><td>Signal subtotal</td><td>{{ sc.signals }}</td></tr>
+                      {% endif %}
+                      <tr class="kbd-score-section"><td colspan="2">Tier multiplier</td></tr>
+                      <tr><td>{{ sc.tier_label }} (Tier {{ sc.tier }})</td><td>× {{ sc.multiplier | round(1) }}</td></tr>
+                      <tr class="kbd-score-total"><td>Final score</td><td>{{ p.host_score_detail }}</td></tr>
+                    </table>
+                  </div>
+                </div>
+                {% else %}
+                <span class="kbd-risk {{ p.risk_class }}">{{ p.risk_level }}</span>
+                {% endif %}
+              </td>
             </tr>
             {% endfor %}
           </tbody>
@@ -1584,15 +1951,28 @@
             <span class="{{ d.icon_class }}">{{ d.icon }}</span>
             <span>
               <strong>{{ d.label }}</strong> · {{ d.detail }}
-              {% if d.get('expandable_items') %}
+              {% if d.get('expandable_groups') %}
               <details class="driver-expand">
                 <summary>Show CVEs</summary>
-                <div class="driver-expand-list">
-                  {% for item in d.expandable_items %}
-                  {% if item is mapping %}<span class="{{ item.css_class }}">{{ item.text }}</span>
-                  {% else %}<span class="{{ d.get('expandable_item_class', 'kev-id') }}">{{ item }}</span>{% endif %}
+                {% for grp in d.expandable_groups %}
+                <details class="driver-owner-expand">
+                  <summary>
+                    {{ grp.owner }}
+                    <span class="driver-owner-count">{{ grp.machines | map(attribute='cves') | map('length') | sum }} CVE{{ 's' if grp.machines | map(attribute='cves') | map('length') | sum != 1 else '' }}</span>
+                  </summary>
+                  {% for m in grp.machines %}
+                  <details class="driver-machine-expand">
+                    <summary>
+                      <span class="driver-machine-label">{{ m.machine }}</span>
+                      <span class="driver-machine-count">{{ m.cves | length }} CVE{{ 's' if m.cves | length != 1 else '' }}</span>
+                    </summary>
+                    <div class="driver-expand-list">
+                      {% for item in m.cves %}<span class="{{ item.css_class }}">{{ item.text }}</span>{% endfor %}
+                    </div>
+                  </details>
                   {% endfor %}
-                </div>
+                </details>
+                {% endfor %}
               </details>
               {% endif %}
             </span>
@@ -1613,6 +1993,8 @@
       <details class="posture-method">
         <summary class="exec-section-toggle">How is the Risk Posture determined?</summary>
         <div class="posture-method-body">
+          {# Risk Posture condition table — temporarily hidden pending alignment review with Host Risk Score #}
+          {#
           The Risk Posture is a single-signal rating computed automatically from
           the findings in this report. The highest matching level applies.
           <table>
@@ -1638,6 +2020,7 @@
               <td>Only Medium or Low-priority findings.</td>
             </tr>
           </table>
+          #}
           <div style="margin-top: 12px; font-weight: 680; font-size: 12px;">Asset Tiering</div>
           <table style="margin-top: 4px;">
             <tr>
@@ -1660,6 +2043,24 @@
           <div style="margin-top: 8px; font-size: 11px; color: var(--muted);">
             Tier is assigned in the input CSV (<code>tier</code> column). Only Tier 0 and Tier 1
             assets trigger CRITICAL posture escalation via the EOL rule.
+          </div>
+          <div style="margin-top: 12px; font-weight: 680; font-size: 12px;">Host Risk Score — Column Placement</div>
+          <div style="margin-top:4px;font-size:11px;color:var(--muted);margin-bottom:6px;">
+            Each host is placed in exactly one column of the Risk Exposure Matrix based on its Host Risk Score.
+          </div>
+          <table style="margin-top: 4px;">
+            {% for label, threshold in host_score_thresholds %}
+            <tr>
+              <td class="pm-{{ label | lower }}" style="white-space:nowrap; font-family:ui-monospace,monospace; font-size:12px;">
+                {% if loop.last %}&lt; {{ host_score_thresholds[loop.index0 - 1][1] }}{% else %}≥ {{ threshold }}{% endif %}
+              </td>
+              <td class="pm-{{ label | lower }}" style="white-space:nowrap;">{{ label }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+          <div style="margin-top: 6px; font-size: 11px; color: var(--muted);">
+            Score formula: <code>(priority counts + signals) × tier multiplier</code>.
+            Click any Host Score badge in the Key Business Drivers table for the full breakdown.
           </div>
         </div>
       </details>
@@ -1799,40 +2200,55 @@
     <aside class="side">
       {# Panneau couverture produits #}
       <section class="panel">
-        <h2>Product Coverage ({{ all_products_summary | length }})</h2>
+        <h2>Product Coverage ({{ all_products_summary | groupby('name') | list | length }})</h2>
         <div class="product-list">
-          {% for p in all_products_summary %}
-          <div class="coverage-item coverage-item--{{ p.support_status }}">
-            <div class="coverage-item-name">{{ p.name }}</div>
-            <div class="coverage-item-meta">
-              {{ p.version }}{% if p.tier_label %} · {{ p.tier_label }}{% endif %}
-              {% if p.support_status == "end_of_life" %} · EOL {{ p.eol_date }}
-              {% elif p.support_status == "extended_support" %} · Ext. Support until {{ p.eol_date }}
-              {% elif p.support_status == "supported" %} · Premier until {{ p.eol_date }}
-              {% else %} · Support unknown{% endif %}
-            </div>
-            {% if p.machine_id %}<div class="coverage-item-machine">{{ p.machine_id }}</div>{% endif %}
-            <div class="coverage-item-badges">
-              {% if p.total_findings == 0 %}
-              <span class="badge no-cve" style="font-size:8px;min-height:14px;padding:1px 5px;">✓ No CVEs</span>
-              {% else %}
-                {% for priority in ["critical","high","medium","low"] %}
-                  {% if p.priority_counts.get(priority,0) %}
-                  <span class="badge {{ priority }}" style="font-size:8px;min-height:14px;padding:1px 5px;">
-                    {{ p.priority_counts[priority] }} {{ priority }}
-                  </span>
+          {% for product_name, entries in all_products_summary | groupby('name') %}
+          {% set top_risk = entries | map(attribute='risk_class') | select('ne', 'risk-none') | first | default('risk-none') %}
+          <details class="machine-item">
+            <summary class="machine-item-header">
+              <span>{{ product_name }}</span>
+              <span class="machine-item-count">{{ entries | length }}</span>
+            </summary>
+            <div class="machine-item-products">
+              {% for p in entries %}
+              <div class="product-item">
+                <div class="product-item-name">{{ p.version }}{% if p.machine_id and p.machine_id != 'unknown' %} · <span style="font-family:ui-monospace,monospace;font-size:0.85em;color:#6b7280;">{{ p.machine_id }}</span>{% endif %}</div>
+                <div class="product-item-meta">
+                  {% if p.support_status == "end_of_life" %}EOL {{ p.eol_date }}
+                  {% elif p.support_status == "extended_support" %}Ext. Support until {{ p.eol_date }}
+                  {% elif p.support_status == "supported" %}Premier until {{ p.eol_date }}
+                  {% else %}Support unknown{% endif %}
+                  {% if p.tier_label %} · {{ p.tier_label }}{% endif %}
+                </div>
+                <div class="product-item-badges">
+                  {% if p.support_status == "end_of_life" %}
+                  <span class="badge end_of_life" style="font-size:10px;min-height:18px;padding:1px 6px;">EOL</span>
+                  {% elif p.support_status == "extended_support" %}
+                  <span class="badge extended_support" style="font-size:10px;min-height:18px;padding:1px 6px;">Ext. Support</span>
                   {% endif %}
-                {% endfor %}
-              {% endif %}
+                  {% if p.total_findings == 0 %}
+                  <span class="badge no-cve" style="font-size:9px;min-height:16px;padding:1px 5px;">✓ No CVEs</span>
+                  {% else %}
+                    {% for priority in ["critical","high","medium","low"] %}
+                      {% if p.priority_counts.get(priority,0) %}
+                      <span class="badge {{ priority }}" style="font-size:10px;min-height:18px;padding:1px 6px;">
+                        {{ p.priority_counts[priority] }} {{ priority }}
+                      </span>
+                      {% endif %}
+                    {% endfor %}
+                  {% endif %}
+                </div>
+              </div>
+              {% endfor %}
             </div>
-          </div>
+          </details>
           {% endfor %}
         </div>
       </section>
 
       {# Panneau produits #}
       <section class="panel">
-        <h2>Machines &amp; Products</h2>
+        <h2>Host Coverage</h2>
         <div class="product-list">
           {% for ms in products_summary %}
           <details class="machine-item">
@@ -1888,11 +2304,57 @@
           <li>NVD wildcard / no versions: {{ wildcard_findings | length }}</li>
           <li>Other suppressed: {{ other_suppressed_count }}</li>
         </ul>
+        {% if data_freshness %}
+        <div style="margin-top:10px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">Data Sources</div>
+        <table class="freshness-table">
+          {% for src in data_freshness %}
+          <tr>
+            <td>{{ src.source }}</td>
+            <td class="{{ 'freshness-stale' if src.stale else 'freshness-ok' }}">{{ src.age_label }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% endif %}
       </section>
     </aside>
   </section>
 </main>
 
+<script>
+  function toggleScorePopup(badge) {
+    const popup = badge.nextElementSibling;
+    const isOpen = popup.classList.contains('open');
+    document.querySelectorAll('.kbd-score-popup.open').forEach(p => {
+      p.classList.remove('open');
+      p.style.cssText = '';
+    });
+    if (!isOpen) {
+      const br = badge.getBoundingClientRect();
+      const vw = window.innerWidth  || document.documentElement.clientWidth;
+      const vh = window.innerHeight || document.documentElement.clientHeight;
+      popup.style.cssText = '';
+      popup.classList.add('open');
+      const pr = popup.getBoundingClientRect();
+      // Default: below the badge, aligned to its left edge
+      let top  = br.bottom + 4;
+      let left = br.left;
+      // Flip up if overflows bottom
+      if (top + pr.height > vh) top = br.top - pr.height - 4;
+      // Flip left if overflows right
+      if (left + pr.width > vw) left = br.right - pr.width;
+      popup.style.top  = top  + 'px';
+      popup.style.left = left + 'px';
+    }
+  }
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('.kbd-score-wrapper')) {
+      document.querySelectorAll('.kbd-score-popup.open').forEach(p => {
+        p.classList.remove('open');
+        p.style.cssText = '';
+      });
+    }
+  });
+</script>
 <script>
   const search          = document.getElementById('search');
   const priorityFilter  = document.getElementById('priorityFilter');

@@ -19,11 +19,13 @@ patch references, and evidence references.
 - [Progress Output](#progress-output)
 - [Product Catalog Enrichment](#product-catalog-enrichment)
 - [Product Name Normalization](#product-name-normalization)
-- [Oracle CPU Advisory Scan](#oracle-cpu-advisory-scan)
+- [Oracle Advisory Scan (CPU + CSPU)](#oracle-advisory-scan-cpu--cspu)
 - [Local Detection Rule Index](#local-detection-rule-index)
 - [Analysis Modes](#analysis-modes)
+- [Analysis Pipeline](#analysis-pipeline)
 - [HTML Report](#html-report)
   - [Risk Posture calculation](#risk-posture-calculation)
+  - [Risk Exposure Matrix — Host Risk Score](#risk-exposure-matrix--host-risk-score)
 - [Signal Reference](#signal-reference)
 - [Recommended Workflow](#recommended-workflow)
 - [Troubleshooting](#troubleshooting)
@@ -37,10 +39,7 @@ patch references, and evidence references.
 python3 setup_first_run.py
 
 # Run analysis
-python3 -m oracle_cve_intel.cli analyze \
-  --input examples/products.csv \
-  --customer "Your Organisation" \
-  --html report.html
+python3 -m oracle_cve_intel.cli analyze --input examples/products.csv --customer "Your Organisation" --html report.html
 
 # Open report
 open REPORT/report.html
@@ -149,20 +148,22 @@ The CSV file must contain the following mandatory columns.
 |---|---|
 | `product_name` | Oracle product name (e.g. `Oracle WebLogic Server`) |
 | `version` | Installed version (e.g. `12.2.1.4`, `19.3`, `8u351`) |
-| `machine_id` | Machine or host group identifier |
+| `host` | Host identifier (e.g. `web001`, `db-prod-01`) |
 | `notes` | Free-text note (e.g. `Internet-facing`, `core database`) |
 
 **Optional columns:**
 
 | Column | Description |
 |---|---|
-| `owner` | Responsible owner or team |
+| `owner` | Responsible owner or team — used in the Risk Exposure Matrix |
 | `tier` | Business criticality tier: `0` Mission Critical · `1` Critical · `2` Important · `3` Standard |
+
+> **Backward compatibility:** `machine_id` is accepted as a fallback if `host` is absent.
 
 **Minimal example:**
 
 ```csv
-product_name,version,machine_id,notes
+product_name,version,host,notes
 Oracle WebLogic Server,12.2.1.4,web001,Internet-facing
 Oracle Database Server,19.3,db001,core database
 ```
@@ -170,7 +171,7 @@ Oracle Database Server,19.3,db001,core database
 **Full example:**
 
 ```csv
-product_name,version,machine_id,notes,owner,tier
+product_name,version,host,notes,owner,tier
 Oracle WebLogic Server,12.2.1.4,web001,Internet-facing,platform,1
 Oracle Database Server,19.3,db001,core database,dba,0
 Oracle E-Business Suite,12.2.10,ebs001,ERP production,finance,1
@@ -326,19 +327,20 @@ NVD CVEs.
 
 ---
 
-## Oracle CPU Advisory Scan
+## Oracle Advisory Scan (CPU + CSPU)
 
 For products where NVD has no specific version ranges (generic CPEs, e.g.
-Oracle E-Business Suite), the engine queries Oracle's quarterly CPU advisories
-(January, April, July, October) from 2017 to the current date.
+Oracle E-Business Suite), the engine scans Oracle advisories:
 
-For each advisory, it identifies the matching product section and checks whether
-the installed version falls within the affected range declared by Oracle.
+- **CPU (Critical Patch Update)** — quarterly, released in January, April, July, October
+- **CSPU (Critical Security Patch Update)** — monthly, released on the **third Tuesday** of each month from 2026; targeted, high-priority fixes that complement the quarterly CPU cycle
+
+Both advisory types are scanned from 2017 (CPU) and 2026 (CSPU) to the current date. For each advisory, the engine identifies the matching product section and checks whether the installed version falls within the affected range declared by Oracle. Findings are tagged with `patch_type = cpu` or `patch_type = cspu` accordingly.
 
 Three possible outcomes:
 
 1. **CVEs are confirmed for the installed version** — they appear in the report
-   with status `CONFIRMED_AFFECTED` and a direct link to the Oracle CPU advisory.
+   with status `CONFIRMED_AFFECTED` and a direct link to the Oracle advisory (CPU or CSPU).
 
 2. **Generic NVD CVEs exist but are not confirmed** — they remain in the "NVD
    wildcard" section of the report (unconfirmed).
@@ -460,33 +462,134 @@ python3 -m oracle_cve_intel.cli analyze \
 
 ---
 
+## Analysis Pipeline
+
+The diagram below shows the full processing pipeline executed by `analyze`.
+Each stage is independent and can fall back gracefully on cache or skip on error.
+
+```mermaid
+flowchart TD
+    A([products.csv]) --> B
+
+    subgraph INPUT ["① Input & Normalisation"]
+        B["read_csv\nParse CSV → ProductRecord list\nColumns: product_name · version · host · owner · tier"]
+        B --> C["normalize\nAlias lookup · CPE prefix resolution\nConfidence: HIGH / MEDIUM / LOW"]
+        C --> D["check_support\n① endoflife.date API\n② oracle_support_dates.json\nStatus: Supported / Extended / EOL / Unknown"]
+    end
+
+    D --> E
+
+    subgraph MAP ["② CVE Mapping"]
+        E["NvdCVEMapper\nQuery NVD CPE API per product"]
+        E --> E1{"NVD returns\ngeneric CPE?"}
+        E1 -->|No version ranges| E2["Oracle Advisory Scan\nCPU: quarterly · Jan Apr Jul Oct\nCSPU: monthly · 3rd Tuesday 2026→now\npatch_type = cpu ∣ cspu\nConfirm affected versions"]
+        E1 -->|Specific version ranges| E3["Version range check\nConfirmed / Potentially affected\n/ NVD wildcard"]
+        E2 --> F
+        E3 --> F
+        F["FindingRecord list\nCVE × product pairs\nPatchReferenceRecord.patch_type"]
+    end
+
+    F --> G
+
+    subgraph ENRICH ["③ CVE Enrichment"]
+        G["RealCVEEnricher"]
+        G --> G1["CISA KEV catalog\nFlags KEV status"]
+        G --> G2["FIRST EPSS API\nExploitation probability score"]
+        G --> G3["NVD fallback per CVE\nCVSS score · severity · published date\nPrefers NVD Primary over CNA Secondary"]
+    end
+
+    G1 & G2 & G3 --> H
+
+    subgraph THREAT ["④ Threat Context"]
+        H["RealThreatContextEnricher\nPublic exploit signal\nActive exploitation\nATT&CK technique inference"]
+    end
+
+    H --> I
+
+    subgraph DETECT ["⑤ Detection Coverage"]
+        I{"--skip-detection?"}
+        I -->|No| I1["DetectionDbMapper\nSQLite index: SigmaHQ · Elastic\nSplunk · Azure Sentinel\nMatch by CVE ID or ATT&CK technique"]
+        I -->|Yes| I2["Mark all as detection gap"]
+        I1 & I2 --> J["detection_gap flag per finding"]
+    end
+
+    J --> K
+
+    subgraph PRIO ["⑥ Prioritisation & Filtering"]
+        K["prioritize\nComposite score: CVSS · KEV · EPSS\n· CSPU +20 · exploit · detection gap\n· support status\n→ Priority: Critical / High / Medium / Low"]
+        K --> K1["Severity filter\n--min-severity"]
+        K1 --> K2["Split confirmed vs suppressed\nNVD wildcard → appendix\nUnconfirmed → suppressed unless --include-unconfirmed"]
+    end
+
+    K2 --> L
+
+    subgraph REPORT ["⑦ Report Generation"]
+        L["write_html + write_json"]
+        L --> L1["REPORT/report.html\nExec summary · Risk Exposure Matrix\nKey Technical Drivers incl. CSPU driver\nCVE cards with CSPU badge · Patch Lag"]
+        L --> L2["REPORT/findings.json\nMachine-readable export"]
+        L --> L3["REPORT/report.log\nAPI calls · warnings · errors"]
+    end
+
+    style INPUT  fill:#f0f9ff,stroke:#bae6fd
+    style MAP    fill:#fefce8,stroke:#fde68a
+    style ENRICH fill:#fff7ed,stroke:#fed7aa
+    style THREAT fill:#fdf4ff,stroke:#e9d5ff
+    style DETECT fill:#f0fdf4,stroke:#bbf7d0
+    style PRIO   fill:#faf5ff,stroke:#ddd6fe
+    style REPORT fill:#f8fafc,stroke:#cbd5e1
+```
+
+**External data sources used during the pipeline:**
+
+| Stage | Source | Cached | TTL |
+|---|---|---|---|
+| Support check | `oracle_support_dates.json` (local) | n/a | Refresh manually |
+| Support check | endoflife.date API | ✓ | 24 h |
+| CVE mapping | NVD CPE API | ✓ | 7 days |
+| CVE mapping | Oracle CPU advisory HTML (quarterly) | ✓ | 7 days |
+| CVE mapping | Oracle CSPU advisory HTML (monthly, 2026+) | ✓ | 7 days |
+| KEV enrichment | CISA KEV JSON feed | ✓ | 24 h |
+| EPSS enrichment | FIRST EPSS API | ✓ | 7 days |
+| Detection rules | Local SQLite index | ✓ | Manual rebuild |
+
+---
+
 ## HTML Report
 
 Open `REPORT/report.html` in a browser.
 
 **Features:**
 
-- Executive summary with Risk Posture rating (CRITICAL / HIGH / MODERATE / LOW)
-  and key risk drivers, including:
-  - KEV — CVEs actively exploited in the wild (CISA catalog)
-  - CVSS > 9.0 — maximum-severity CVEs, split between active and EOL-only products
-  - Patch Lag — average days between CVE publication and Oracle CPU advisory,
-    with a per-CVE breakdown; EOL products are excluded from this metric
-  - Detection blind spot — % of Critical/High findings with no known detection rule
-  - EOL product — products past end-of-life with unpatched findings
-  - Critical priority — findings rated Critical by the composite priority score
+- **Executive Summary** (collapsible) with:
+  - Scope line: hosts · distinct products · deployments assessed
+  - Risk headline — plain-language one-sentence verdict
+  - Deployment-level risk pills (e.g. *4 Critical deployments · 2 EOL Products · since 2013*)
+  - Risk Posture badge (CRITICAL / HIGH / MODERATE / LOW)
+  - **Risk Exposure Matrix** — owner × host heatmap; each card placed by Host Risk Score with a clickable popup showing the full score breakdown
+  - **Key Business Drivers** table — owner, tier, product, version, host, support status, Host Score with formula popup
+  - **Key Technical Drivers** — expandable signal drivers grouped by owner → host → CVE:
+    - CSPU — CVEs addressed in Oracle emergency Critical Security Patch Update
+    - KEV — CVEs actively exploited in the wild (CISA catalog)
+    - CVSS > 9.0 — maximum-severity CVEs, split active vs EOL-only
+    - Patch Lag — average days from CVE publication to Oracle advisory
+    - Permanent exposure — EOL CVEs with no vendor patch path
+    - Detection blind spot, Critical priority, Public exploit
+  - Data freshness — age of each cached source (KEV, NVD, EPSS, CSPU)
+- **Finding cards** with CSPU ⚡ / KEV ⚑ / Public Exploit badges; Priority score; CVSS severity; Detection state
 - Full-text search
-- Filters by priority, detection coverage, product, machine, KEV, and public exploit
+- Filters by priority, detection coverage, product, host, KEV, and public exploit
 - Expandable CVE sections with:
   - ATT&CK Techniques
   - Detection Rules
-  - Patch References with Oracle CPU advisory links
+  - Patch References — CPU and CSPU advisory links with `patch_type` distinction
   - Patch Lag — per-CVE lag calculation with method note and references
+  - Priority Explanation — narrative including CSPU mention when relevant
   - Evidence References
-- Machine-group view with owner and tier level
+- **Host Coverage** — host-grouped view with owner, tier, products, priority counts
+- **Product Coverage** — product-grouped expandable view with version/host rows
+- Support Status block with direct link to Oracle Lifetime Support page
 - Direct links to all external references
-- Separate section for products with no confirmed CVE (NVD wildcard or version
-  out of Oracle support)
+- Separate section for products with no confirmed CVE (NVD wildcard or version out of Oracle support)
 
 ### Risk Posture calculation
 
@@ -513,9 +616,62 @@ its tier is `0` (Mission Critical) or `1` (Critical) and at least one Critical
 finding exists. Tier `2` (Important) and `3` (Standard) assets are excluded
 from posture escalation.
 
+### Risk Exposure Matrix — Host Risk Score
+
+The **Risk Exposure Matrix** in the executive summary places each `(owner, host)` pair in exactly one column based on a **Host Risk Score**. This score combines finding severity breadth, active threat signals, and business criticality into a single integer.
+
+#### Formula
+
+```
+base    = (n_critical × 40) + (n_high × 10) + (n_medium × 3) + (n_low × 1)
+signals = (n_kev × 30) + (n_cspu × 20) + (n_eol × 15) + (n_exploit × 10)
+score   = round((base + signals) × tier_multiplier)
+```
+
+`n_critical / n_high / n_medium / n_low` are counts of **unique CVE IDs whose composite priority score placed them at that tier** on this host — not raw CVSS severity bands. A CVE with CVSS 8.5 (High severity) can reach Critical *priority* if it is also KEV-listed, has a public exploit, or affects an EOL product. The base therefore reflects post-prioritisation risk, not the vendor-assigned severity alone.
+
+`n_kev / n_cspu / n_eol / n_exploit` count unique CVE IDs carrying that signal on this host. `n_eol` counts CVEs on products that have reached End of Life — these will never receive a vendor patch, making them a permanent unresolvable exposure.
+
+#### Tier multiplier
+
+| Tier | Label | Multiplier |
+|---|---|---|
+| 0 | Mission Critical | × 2.5 |
+| 1 | Critical | × 2.0 |
+| 2 | Important | × 1.5 |
+| 3 / Unknown | Standard | × 1.0 |
+
+#### Column placement thresholds
+
+| Score | Column |
+|---|---|
+| ≥ 60 | Critical |
+| ≥ 20 | High |
+| ≥ 5 | Moderate |
+| < 5 | Low |
+
+#### Rationale
+
+| Component | Weight | Justification |
+|---|---|---|
+| Critical finding | 40 | Highest individual finding severity |
+| KEV signal | +30 | Active exploitation confirmed by CISA |
+| CSPU signal | +20 | Oracle declared too critical for quarterly cycle |
+| EOL CVE signal | +15 | No vendor patch will ever be issued — permanent exposure |
+| High finding | 10 | Significant but patchable within standard SLA |
+| Public exploit | +10 | Weaponised attack code publicly available |
+| Medium finding | 3 | Elevated but lower immediacy |
+| Low finding | 1 | Baseline presence |
+| Tier multiplier | × 1.0–2.5 | Business criticality scales the entire score |
+
+The badge in each card shows the Host Risk Score. Hovering the badge displays the CVE count and the scoring formula components.
+
 ---
 
 ## Signal Reference
+
+**CSPU**
+Oracle issued an out-of-band Critical Security Patch Update (CSPU) for this CVE. CSPUs are released on the third Tuesday of each month (from 2026) for vulnerabilities too critical to wait for the quarterly CPU cycle. A CSPU signal adds +20 to the Host Risk Score and +20 to the per-finding composite priority score.
 
 **KEV**
 The CVE is listed in the CISA Known Exploited Vulnerabilities catalog.
@@ -543,19 +699,21 @@ when no Primary score exists.
 
 **Patch Lag**
 Per-CVE metric computed as the number of days between the NVD publish date and
-the earliest Oracle CPU advisory that addressed the CVE. CPU release dates are
-approximated as the 15th of the advisory month. EOL products are excluded — the
-metric targets products under active Oracle support only. The executive summary
-shows the average lag across all CVEs where both dates are available; each CVE
-card shows the individual breakdown with references.
+the earliest Oracle advisory (CPU or CSPU) that addressed the CVE. Advisory
+release dates are approximated as the 15th of the advisory month. EOL products
+are excluded — the metric targets products under active Oracle support only. The
+executive summary shows the average lag across all CVEs where both dates are
+available; each CVE card shows the individual breakdown with references. CSPU
+advisories produce shorter lags than quarterly CPUs by design.
 
 **Patch References**
-CVE-specific Oracle CPU advisory, extracted automatically from NVD references
-or from a direct Oracle CPU advisory scan. Each card shows:
+CVE-specific Oracle advisory extracted automatically from NVD references or from
+a direct advisory scan. The `patch_type` field distinguishes `cpu` (quarterly)
+from `cspu` (monthly emergency). Each card shows:
 
 | Field | Notes |
 |---|---|
-| Source | Clickable link to the specific Oracle CPU advisory (e.g. Oracle CPU January 2025) |
+| Source | Clickable link to the specific Oracle advisory (e.g. Oracle CPU January 2025 or Oracle CSPU May 2026) |
 | Product | Normalized name of the affected product |
 | Affected versions | Product version from the input file |
 | Affected component | Internal component affected, if available in the advisory |

@@ -2,15 +2,27 @@ from __future__ import annotations
 
 import json
 import re
+import time as _time
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
 import jinja2
 
-from .config import TEMPLATES_DIR
+from .config import (
+    CACHE_TTL, TEMPLATES_DIR,
+    HOST_SCORE_WEIGHTS, HOST_SCORE_SIGNALS,
+    HOST_SCORE_TIER_MULTIPLIERS, HOST_SCORE_THRESHOLDS,
+)
 from .models import AffectedStatus, FindingRecord, Priority, ProductRecord, SupportStatus, to_dict
 from .runtime import RunContext
+
+_ORACLE_LIFETIME_URL = "https://www.oracle.com/support/lifetime-support/"
+
+
+def _support_source_url() -> str:
+    return _ORACLE_LIFETIME_URL
+
 
 _TIER_LABELS: dict[str, str] = {
     "0": "Mission Critical",
@@ -54,6 +66,38 @@ def write_json(findings: list[FindingRecord], output_path: Path | str) -> None:
     output.write_text(json.dumps([to_dict(item) for item in findings], indent=2), encoding="utf-8")
 
 
+def _build_data_freshness(cache_dir: Path | None) -> list[dict]:
+    """Return age info for each cached data source, for display in the report."""
+    _LABELS = {
+        "kev": "CISA KEV",
+        "nvd": "NVD",
+        "epss": "FIRST EPSS",
+        "oracle_advisories": "Oracle CPU Advisories",
+        "endoflife": "endoflife.date",
+    }
+    if cache_dir is None or not cache_dir.exists():
+        return []
+    now = _time.time()
+    result = []
+    for source, label in _LABELS.items():
+        source_dir = cache_dir / source
+        files = list(source_dir.glob("*.json")) if source_dir.exists() else []
+        if not files:
+            result.append({"source": label, "age_label": "not cached", "stale": True})
+            continue
+        latest_mtime = max(f.stat().st_mtime for f in files)
+        age_s = now - latest_mtime
+        ttl = CACHE_TTL.get(source, 604800)
+        if age_s < 3600:
+            age_label = f"{int(age_s / 60)}m ago"
+        elif age_s < 86400:
+            age_label = f"{int(age_s / 3600)}h ago"
+        else:
+            age_label = f"{int(age_s / 86400)}d ago"
+        result.append({"source": label, "age_label": age_label, "stale": age_s > ttl})
+    return result
+
+
 def write_html(
     findings: list[FindingRecord],
     output_path: Path | str,
@@ -61,10 +105,14 @@ def write_html(
     suppressed_findings: list[FindingRecord] | None = None,
     all_products: list[ProductRecord] | None = None,
     customer: str = "UNKNOWN_ORG",
+    cache_dir: Path | None = None,
 ) -> None:
     output = Path(output_path)
     suppressed = suppressed_findings or []
-    context = _build_html_context(findings, run_ctx, suppressed, all_products or [], customer=customer)
+    context = _build_html_context(
+        findings, run_ctx, suppressed, all_products or [],
+        customer=customer, cache_dir=cache_dir,
+    )
     template = _jinja_env().get_template("report.html.j2")
     output.write_text(template.render(**context), encoding="utf-8")
 
@@ -294,12 +342,42 @@ def _jinja_env() -> jinja2.Environment:
     )
 
 
+def _enrich_with_host_scores(
+    all_products_summary: list[dict],
+    heatmap: dict,
+) -> list[dict]:
+    """Add host_score, host_score_detail, host_column to each all_products_summary entry."""
+    lookup: dict[str, dict] = {}
+    for col in heatmap.get("columns", []):
+        for card in col.get("owners", []):
+            lookup[card["host"]] = {
+                "host_score":            card["score"],
+                "host_score_detail":     card["score_detail"],
+                "host_score_components": card["score_components"],
+                "host_column":           col["level"],
+                "host_column_css":       col["css_level"],
+            }
+    enriched = []
+    for p in all_products_summary:
+        hs = lookup.get(p.get("machine_id", ""), {})
+        enriched.append({
+            **p,
+            "host_score":            hs.get("host_score", 0),
+            "host_score_detail":     hs.get("host_score_detail", "—"),
+            "host_score_components": hs.get("host_score_components", {}),
+            "host_column":           hs.get("host_column", "—"),
+            "host_column_css":       hs.get("host_column_css", ""),
+        })
+    return enriched
+
+
 def _build_html_context(
     findings: list[FindingRecord],
     run_ctx: RunContext,
     suppressed: list[FindingRecord],
     all_products: list[ProductRecord],
     customer: str = "UNKNOWN_ORG",
+    cache_dir: Path | None = None,
 ) -> dict:
     counts = Counter(f.priority for f in findings)
     covered = sum(1 for f in findings if not f.detection_gap)
@@ -310,6 +388,41 @@ def _build_html_context(
     wildcard = [f for f in suppressed if f.affected_status == AffectedStatus.NVD_WILDCARD_NO_VERSIONS]
     other_suppressed = [f for f in suppressed if f.affected_status != AffectedStatus.NVD_WILDCARD_NO_VERSIONS]
     all_products_summary = _build_all_products_summary(all_products, findings)
+
+    confirmed_count = sum(1 for f in findings if f.affected_status == AffectedStatus.CONFIRMED_AFFECTED)
+    potential_count = len(findings) - confirmed_count
+
+    scope_hosts = len({p.machine_id for p in all_products if p.machine_id and p.machine_id != "unknown"})
+    scope_products = len({p.normalized_product_name or p.raw_product_name for p in all_products})
+    scope_deployments = len(all_products)
+
+    _risk_order = ["Critical", "High", "Moderate", "Low"]
+    _risk_to_badge = {"Critical": "critical", "High": "high", "Moderate": "medium", "Low": "low"}
+    _risk_raw = Counter(p["risk_level"] for p in all_products_summary)
+    product_risk_pills = [
+        {
+            "label": lvl,
+            "count": _risk_raw[lvl],
+            "badge_class": _risk_to_badge[lvl],
+            "tooltip": f"{_risk_raw[lvl]} deployment{'s' if _risk_raw[lvl] != 1 else ''} with {lvl.lower()} risk exposure",
+        }
+        for lvl in _risk_order if _risk_raw.get(lvl, 0) > 0
+    ]
+
+    eol_dates_sorted = sorted(
+        p["eol_date"] for p in all_products_summary
+        if p["support_status"] == "end_of_life" and p["eol_date"]
+    )
+    oldest_eol_year = eol_dates_sorted[0][:4] if eol_dates_sorted else None
+
+    cspu_count = len({
+        f.cve.cve_id for f in findings
+        if any(getattr(pr, "patch_type", "cpu") == "cspu" for pr in f.patch_references)
+    })
+    risk_headline = _build_risk_headline(kev_count, all_products_summary, cspu_count)
+    owner_risk_heatmap = _build_owner_risk_heatmap(findings)
+    all_products_summary = _enrich_with_host_scores(all_products_summary, owner_risk_heatmap)
+
     return {
         "customer": customer,
         "generated_at": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
@@ -342,6 +455,19 @@ def _build_html_context(
         "all_products_summary": all_products_summary,
         "executive_summary": _build_executive_summary(findings, all_products_summary),
         "threat_summary": _build_threat_summary(findings),
+        "confirmed_count": confirmed_count,
+        "potential_count": potential_count,
+        "product_risk_pills": product_risk_pills,
+        "oldest_eol_year": oldest_eol_year,
+        "risk_headline": risk_headline,
+        "owner_risk_heatmap": owner_risk_heatmap,
+        "scope": {
+            "hosts": scope_hosts,
+            "products": scope_products,
+            "deployments": scope_deployments,
+        },
+        "host_score_thresholds": HOST_SCORE_THRESHOLDS,
+        "data_freshness": _build_data_freshness(cache_dir),
         "warnings": run_ctx.warnings,
         "warnings_count": len(run_ctx.warnings),
         "errors_count": len(run_ctx.errors),
@@ -401,6 +527,7 @@ def _build_products_summary(
                     "eol_date": record.eol_date,
                     "support_notes": record.support_notes,
                     "premier_end": _extract_premier_end(record.support_notes),
+                    "support_url": _support_source_url(),
                     "patches": _collect_patches(group),
                     "wildcard_only": False,
                     "wildcard_count": 0,
@@ -424,6 +551,7 @@ def _build_products_summary(
                     "eol_date": record.eol_date,
                     "support_notes": record.support_notes,
                     "premier_end": _extract_premier_end(record.support_notes),
+                    "support_url": _support_source_url(),
                     "patches": _collect_patches(group),
                     "wildcard_only": True,
                     "wildcard_count": len(group),
@@ -461,6 +589,7 @@ def _finding_context(finding: FindingRecord, detection_skipped: bool) -> dict:
         "detection_state": detection_state,
         "detection_label": detection_label,
         "patch_lag": _finding_patch_lag(finding),
+        "cspu_patched": any(getattr(pr, "patch_type", "cpu") == "cspu" for pr in finding.patch_references),
         "search_text": _build_search_text(finding, product, techniques, evidence),
     }
 
@@ -552,6 +681,27 @@ def _build_executive_summary(
             ] if s]
             para.append(f"This includes {_oxford(threat_bits)}.")
     paragraphs.append(" ".join(para))
+
+    # ── Para 1b: CSPU signal (inserted when relevant) ────────────────────
+    cspu_cve_ids: set[str] = set()
+    cspu_advisories: set[str] = set()
+    for f in findings:
+        for pr in f.patch_references:
+            if getattr(pr, "patch_type", "cpu") == "cspu":
+                cspu_cve_ids.add(f.cve.cve_id)
+                if pr.advisory_title:
+                    cspu_advisories.add(pr.advisory_title)
+    if cspu_cve_ids:
+        n_cspu = len(cspu_cve_ids)
+        adv_clause = (
+            f" via {_oxford(sorted(cspu_advisories))}" if cspu_advisories else ""
+        )
+        paragraphs.append(
+            f"Oracle has issued {'an' if n_cspu == 1 else ''} emergency Critical Security Patch Update "
+            f"(CSPU){adv_clause} covering {n_cspu} CVE{'s' if n_cspu != 1 else ''} in this estate. "
+            f"Unlike quarterly CPUs, CSPU patches are targeted and must be applied immediately "
+            f"without waiting for the next scheduled CPU cycle."
+        )
 
     # ── Para 2: Highest-priority finding ─────────────────────────────────
     top = findings[0]
@@ -723,7 +873,7 @@ _CPU_LAG_MONTH: dict[str, int] = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
-_CPU_URL_DATE_RE = re.compile(r"cpu([a-z]{3})(\d{4})", re.IGNORECASE)
+_CPU_URL_DATE_RE = re.compile(r"c(?:s)?pu([a-z]{3})(\d{4})", re.IGNORECASE)
 
 
 def _cpu_advisory_date(url: str) -> date | None:
@@ -781,6 +931,214 @@ def _collect_patch_lags(findings: list[FindingRecord]) -> list[tuple[str, int]]:
     return lags
 
 
+def _build_owner_risk_heatmap(findings: list[FindingRecord]) -> dict:
+    """Place each (owner, host) in a risk column based on the Host Risk Score.
+
+    Host Risk Score formula:
+        base    = (n_critical × 40) + (n_high × 10) + (n_medium × 3) + (n_low × 1)
+        signals = (n_kev × 30) + (n_cspu × 20) + (n_exploit × 10)
+        score   = round((base + signals) × tier_multiplier)
+
+    Tier multipliers: T0 × 2.5 · T1 × 2.0 · T2 × 1.5 · T3/Unknown × 1.0
+    Placement:  ≥ 60 → Critical · ≥ 20 → High · ≥ 5 → Moderate · else → Low
+    """
+    _LEVELS       = ["Critical", "High", "Moderate", "Low"]
+    _LEVELS_DISPLAY = ["Low", "Moderate", "High", "Critical"]
+    _PRIORITY_TO_LEVEL = {
+        Priority.CRITICAL: "Critical",
+        Priority.HIGH:     "High",
+        Priority.MEDIUM:   "Moderate",
+        Priority.LOW:      "Low",
+    }
+    _TIER_MULT  = HOST_SCORE_TIER_MULTIPLIERS
+    _THRESHOLDS = HOST_SCORE_THRESHOLDS
+
+    pair_level:  dict[tuple, dict[str, set]] = defaultdict(
+        lambda: {lvl: set() for lvl in _LEVELS}
+    )
+    pair_kev:     dict[tuple, set] = defaultdict(set)
+    pair_exploit: dict[tuple, set] = defaultdict(set)
+    pair_cvss9:   dict[tuple, set] = defaultdict(set)
+    pair_eol:      dict[tuple, str | None] = defaultdict(lambda: None)
+    pair_eol_cves: dict[tuple, set] = defaultdict(set)
+    pair_tier:     dict[tuple, str] = {}
+    pair_cspu:     dict[tuple, set] = defaultdict(set)
+
+    for f in findings:
+        level = _PRIORITY_TO_LEVEL.get(f.priority)
+        if level is None:
+            continue
+        owner  = f.product.owner or "—"
+        host   = f.product.machine_id or "—"
+        cve_id = f.cve.cve_id
+        key    = (owner, host)
+        pair_level[key][level].add(cve_id)
+        if f.cve.kev_status:
+            pair_kev[key].add(cve_id)
+        if f.threat_context and f.threat_context.public_exploit:
+            pair_exploit[key].add(cve_id)
+        if f.cve.cvss_score is not None and f.cve.cvss_score > 9.0:
+            pair_cvss9[key].add(cve_id)
+        if f.product.support_status == SupportStatus.END_OF_LIFE:
+            if pair_eol[key] is None:
+                pair_eol[key] = f.product.eol_date or "EOL"
+            pair_eol_cves[key].add(cve_id)
+        if key not in pair_tier and f.product.tier:
+            pair_tier[key] = f.product.tier
+        if any(getattr(pr, "patch_type", "cpu") == "cspu" for pr in f.patch_references):
+            pair_cspu[key].add(cve_id)
+
+    columns: dict[str, list] = {lvl: [] for lvl in _LEVELS}
+    for (owner, host) in sorted(pair_level):
+        key       = (owner, host)
+        n_crit    = len(pair_level[key]["Critical"])
+        n_high    = len(pair_level[key]["High"])
+        n_med     = len(pair_level[key]["Moderate"])
+        n_low     = len(pair_level[key]["Low"])
+        n_kev     = len(pair_kev[key])
+        n_cspu    = len(pair_cspu[key])
+        n_exploit = len(pair_exploit[key])
+        n_eol     = len(pair_eol_cves[key])
+
+        base       = (n_crit    * HOST_SCORE_WEIGHTS["critical"]
+                    + n_high   * HOST_SCORE_WEIGHTS["high"]
+                    + n_med    * HOST_SCORE_WEIGHTS["medium"]
+                    + n_low    * HOST_SCORE_WEIGHTS["low"])
+        signals    = (n_kev     * HOST_SCORE_SIGNALS["kev"]
+                    + n_cspu   * HOST_SCORE_SIGNALS["cspu"]
+                    + n_eol    * HOST_SCORE_SIGNALS["eol"]
+                    + n_exploit* HOST_SCORE_SIGNALS["exploit"])
+        tier_str   = pair_tier.get(key, "")
+        multiplier = _TIER_MULT.get(tier_str, 1.0)
+        host_score = round((base + signals) * multiplier)
+
+        if host_score == 0:
+            continue
+
+        placement = next(lvl for lvl, t in _THRESHOLDS if host_score >= t)
+        total_cves = n_crit + n_high + n_med + n_low
+
+        # Human-readable score breakdown: "(40+30) × 2.5 = 175"
+        inner = f"({base}+{signals})" if signals else str(base)
+        mult_str = f" × {multiplier:g}" if multiplier != 1.0 else ""
+        score_detail = f"{inner}{mult_str} = {host_score}"
+
+        columns[placement].append({
+            "owner":        owner,
+            "host":         host,
+            "score":        host_score,
+            "score_detail": score_detail,
+            "score_components": {
+                "n_crit":     n_crit,
+                "n_high":     n_high,
+                "n_med":      n_med,
+                "n_low":      n_low,
+                "base":       base,
+                "n_kev":      n_kev,
+                "n_cspu":     n_cspu,
+                "n_eol":      n_eol,
+                "n_exploit":  n_exploit,
+                "signals":    signals,
+                "tier":       tier_str or "—",
+                "tier_label": _TIER_LABELS.get(tier_str, "Standard"),
+                "multiplier": multiplier,
+            },
+            "count":        total_cves,
+            "kev":      n_kev,
+            "exploit":  n_exploit,
+            "cvss9":    len(pair_cvss9[key]),
+            "eol_date": pair_eol[key],
+            "tier":     f"Tier {tier_str}" if tier_str else None,
+            "cspu":     n_cspu,
+        })
+
+    return {
+        "levels": _LEVELS_DISPLAY,
+        "columns": [
+            {"level": lvl, "css_level": lvl.lower(), "owners": columns[lvl]}
+            for lvl in _LEVELS_DISPLAY
+        ],
+    }
+
+
+def _build_risk_headline(kev_count: int, all_products_summary: list[dict], cspu_count: int = 0) -> str:
+    eol_with_findings = sum(
+        1 for p in all_products_summary
+        if p["support_status"] == "end_of_life" and p["total_findings"] > 0
+    )
+    crit = sum(1 for p in all_products_summary if p["risk_level"] == "Critical")
+
+    def _n(n: int, singular: str, plural: str | None = None) -> str:
+        return f"{n} {singular if n == 1 else (plural or singular + 's')}"
+
+    if kev_count > 0 and eol_with_findings > 0:
+        cspu_clause = f"; {_n(cspu_count, 'CSPU CVE')} require emergency patching" if cspu_count else ""
+        return (
+            f"{_n(kev_count, 'CVE')} actively exploited in the wild across "
+            f"{_n(eol_with_findings, 'EOL system')} with no vendor patch path"
+            f"{cspu_clause} — immediate escalation required."
+        )
+    if kev_count > 0:
+        cspu_clause = f"; {_n(cspu_count, 'CSPU CVE')} require emergency patching" if cspu_count else ""
+        return (
+            f"{_n(kev_count, 'CVE')} actively exploited in the wild"
+            f"{cspu_clause} — isolate affected systems and apply emergency patches."
+        )
+    if cspu_count > 0:
+        return (
+            f"Oracle issued emergency CSPU patches for {_n(cspu_count, 'CVE')} in this estate "
+            "— apply immediately without waiting for the next quarterly CPU."
+        )
+    if crit > 0 and eol_with_findings > 0:
+        return (
+            f"{_n(crit, 'critical-risk deployment')} including "
+            f"{_n(eol_with_findings, 'EOL product')} with no vendor patch path."
+        )
+    if crit > 0:
+        return f"{_n(crit, 'deployment')} at critical risk — immediate patching required."
+    if eol_with_findings > 0:
+        return (
+            f"{_n(eol_with_findings, 'EOL product')} "
+            "carrying permanent unpatched exposure — upgrade plan required."
+        )
+    high = sum(1 for p in all_products_summary if p["risk_level"] in ("High", "Moderate"))
+    if high > 0:
+        return f"{_n(high, 'deployment')} require{'s' if high == 1 else ''} attention; no critical or actively exploited exposure detected."
+    return "No critical or actively exploited vulnerabilities detected in this assessment."
+
+
+def _group_by_owner_machine(
+    findings: list[FindingRecord],
+    cve_items: dict[str, dict],
+) -> list[dict]:
+    """Group CVE items (cve_id → {text, css_class}) by owner → machine for nested expand."""
+    from collections import defaultdict
+
+    seen: set[tuple[str, str, str]] = set()
+    groups: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
+
+    for f in findings:
+        cve_id = f.cve.cve_id
+        if cve_id not in cve_items:
+            continue
+        owner = f.product.owner or "—"
+        machine = f.product.machine_id or "—"
+        key = (owner, machine, cve_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        groups[owner][machine].append(cve_items[cve_id])
+
+    result = []
+    for owner in sorted(groups):
+        machines = [
+            {"machine": m, "cves": groups[owner][m]}
+            for m in sorted(groups[owner])
+        ]
+        result.append({"owner": owner, "machines": machines})
+    return result
+
+
 def _build_risk_posture(
     findings: list[FindingRecord],
     kev_count: int,
@@ -815,19 +1173,39 @@ def _build_risk_posture(
 
     seen_kev: set[str] = set()
     kev_ids: list[str] = []
+    cspu_cve_ids: list[str] = []
+    seen_cspu: set[str] = set()
     for f in findings:
         if f.cve.kev_status and f.cve.cve_id not in seen_kev:
             seen_kev.add(f.cve.cve_id)
             kev_ids.append(f.cve.cve_id)
+        if (any(getattr(pr, "patch_type", "cpu") == "cspu" for pr in f.patch_references)
+                and f.cve.cve_id not in seen_cspu):
+            seen_cspu.add(f.cve.cve_id)
+            cspu_cve_ids.append(f.cve.cve_id)
 
     drivers: list[dict] = []
+    if cspu_cve_ids:
+        cspu_items = {cid: {"text": cid, "css_class": "cspu-id"} for cid in cspu_cve_ids}
+        drivers.append({
+            "icon": "⚡", "icon_class": "driver-icon-cspu",
+            "label": "CSPU",
+            "detail": (
+                f"{len(cspu_cve_ids)} CVE{'s' if len(cspu_cve_ids) != 1 else ''} addressed in an "
+                "Oracle emergency CSPU — Oracle-confirmed critical severity"
+            ),
+            "expandable_groups": _group_by_owner_machine(findings, cspu_items),
+            "action": "Apply the Oracle CSPU patch immediately; do not wait for the next quarterly CPU",
+            "action_class": "action-arrow-urgent",
+        })
+
     if kev_count > 0:
+        kev_cve_items = {cid: {"text": cid, "css_class": "kev-id"} for cid in kev_ids}
         drivers.append({
             "icon": "⚑", "icon_class": "driver-icon-kev",
             "label": "KEV",
             "detail": f"{len(kev_ids)} CVE{'s' if len(kev_ids) != 1 else ''} actively exploited in the wild",
-            "expandable_items": kev_ids,
-            "expandable_item_class": "kev-id",
+            "expandable_groups": _group_by_owner_machine(findings, kev_cve_items),
             "action": "Isolate affected assets and apply emergency patch immediately",
             "action_class": "action-arrow-urgent",
         })
@@ -846,15 +1224,15 @@ def _build_risk_posture(
         n_non_eol = len(cvss9_non_eol)
         n_eol = len(eol_only_cvss9)
         eol_clause = f" (+{n_eol} EOL)" if n_eol else ""
-        tagged_items = (
-            [{"text": cid, "css_class": "crit-id"} for cid in sorted(cvss9_non_eol)]
-            + [{"text": cid, "css_class": "eol-crit-id"} for cid in sorted(eol_only_cvss9)]
+        cvss9_cve_items = (
+            {cid: {"text": cid, "css_class": "crit-id"} for cid in cvss9_non_eol}
+            | {cid: {"text": cid, "css_class": "eol-crit-id"} for cid in eol_only_cvss9}
         )
         drivers.append({
             "icon": "◉", "icon_class": "driver-icon-warn",
             "label": "CVSS > 9.0",
             "detail": f"{n_non_eol} CVE{'s' if n_non_eol != 1 else ''} with critical severity score{eol_clause}",
-            "expandable_items": tagged_items,
+            "expandable_groups": _group_by_owner_machine(findings, cvss9_cve_items),
             "action": "Prioritize patching for maximum-severity vulnerabilities",
             "action_class": "action-arrow-normal",
         })
@@ -862,13 +1240,15 @@ def _build_risk_posture(
     patch_lags = _collect_patch_lags(findings)
     if patch_lags:
         mean_lag = round(sum(d for _, d in patch_lags) / len(patch_lags))
-        lag_items = [f"{cid} ({days}d)" for cid, days in sorted(patch_lags, key=lambda x: x[1], reverse=True)]
+        lag_cve_items = {
+            cid: {"text": f"{cid} ({days}d)", "css_class": "lag-id"}
+            for cid, days in sorted(patch_lags, key=lambda x: x[1], reverse=True)
+        }
         drivers.append({
             "icon": "◉", "icon_class": "driver-icon-warn",
             "label": "Patch lag",
             "detail": f"Avg. {mean_lag} days to patch ({len(patch_lags)} CVE{'s' if len(patch_lags) != 1 else ''})",
-            "expandable_items": lag_items,
-            "expandable_item_class": "lag-id",
+            "expandable_groups": _group_by_owner_machine(findings, lag_cve_items),
             "action": "Use lag data to calibrate patch SLA windows with your vendor",
             "action_class": "action-arrow-normal",
         })
@@ -882,24 +1262,33 @@ def _build_risk_posture(
             "action_class": "action-arrow-normal",
         })
 
-    eol_names: list[str] = []
-    seen_eol: set[str] = set()
+    eol_cve_items: dict[str, dict] = {}
+    seen_eol_products: set[str] = set()
+    eol_product_names: list[str] = []
     for f in findings:
         if f.product.support_status == SupportStatus.END_OF_LIFE:
             name = f.product.normalized_product_name or f.product.raw_product_name
-            key = f"{name}::{f.product.raw_version}"
-            if key not in seen_eol:
-                seen_eol.add(key)
+            pkey = f"{name}::{f.product.raw_version}"
+            if pkey not in seen_eol_products:
+                seen_eol_products.add(pkey)
                 suffix = f" (EOL {f.product.eol_date})" if f.product.eol_date else ""
-                eol_names.append(f"{name} {f.product.raw_version}{suffix}")
-    if eol_names:
-        extra = f" (+{len(eol_names) - 1} more)" if len(eol_names) > 1 else ""
+                eol_product_names.append(f"{name} {f.product.raw_version}{suffix}")
+            if f.cve.cve_id not in eol_cve_items:
+                eol_cve_items[f.cve.cve_id] = {"text": f.cve.cve_id, "css_class": "eol-perm-id"}
+    if eol_cve_items:
+        n_eol_cves = len(eol_cve_items)
+        n_eol_prods = len(eol_product_names)
         drivers.append({
-            "icon": "◉", "icon_class": "driver-icon-warn",
-            "label": "EOL product",
-            "detail": f"{eol_names[0]}{extra}",
-            "action": "Open upgrade project with target date, assign named owner",
-            "action_class": "action-arrow-normal",
+            "icon": "✕", "icon_class": "driver-icon-eol",
+            "label": "Permanent exposure",
+            "detail": (
+                f"{n_eol_cves} CVE{'s' if n_eol_cves != 1 else ''} on "
+                f"{n_eol_prods} EOL product{'s' if n_eol_prods != 1 else ''} "
+                "— no vendor patch will ever be issued"
+            ),
+            "expandable_groups": _group_by_owner_machine(findings, eol_cve_items),
+            "action": "Obtain formal risk acceptance or initiate upgrade project with named owner and target date",
+            "action_class": "action-arrow-urgent",
         })
 
     if critical_count > 0:
@@ -909,12 +1298,12 @@ def _build_risk_posture(
             if f.priority == Priority.CRITICAL and f.cve.cve_id not in seen_crit:
                 seen_crit.add(f.cve.cve_id)
                 crit_ids.append(f.cve.cve_id)
+        crit_cve_items = {cid: {"text": cid, "css_class": "crit-id"} for cid in crit_ids}
         drivers.append({
             "icon": "◉", "icon_class": "driver-icon-warn",
             "label": "Critical priority",
             "detail": f"{critical_count} finding{'s' if critical_count != 1 else ''} rated Critical priority",
-            "expandable_items": crit_ids,
-            "expandable_item_class": "crit-id",
+            "expandable_groups": _group_by_owner_machine(findings, crit_cve_items),
             "action": "Assign remediation owners, set patch SLA, track in ticket system",
             "action_class": "action-arrow-normal",
         })
@@ -926,12 +1315,12 @@ def _build_risk_posture(
             seen_exploit.add(f.cve.cve_id)
             exploit_ids.append(f.cve.cve_id)
     if exploit_ids:
+        exploit_cve_items = {cid: {"text": cid, "css_class": "exploit-id"} for cid in exploit_ids}
         drivers.append({
             "icon": "⚑", "icon_class": "driver-icon-warn",
             "label": "Public exploit",
             "detail": f"{len(exploit_ids)} CVE{'s' if len(exploit_ids) != 1 else ''} with a publicly available exploit",
-            "expandable_items": exploit_ids,
-            "expandable_item_class": "exploit-id",
+            "expandable_groups": _group_by_owner_machine(findings, exploit_cve_items),
             "action": "Prioritise patching and restrict network exposure for affected assets",
             "action_class": "action-arrow-normal",
         })
@@ -987,7 +1376,7 @@ def _primary_references(references) -> list:
     return _filter_references(references)
 
 
-def _overflow_references(_references) -> list:
+def _overflow_references(_: list) -> list:
     return []
 
 
