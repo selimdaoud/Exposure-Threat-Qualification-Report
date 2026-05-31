@@ -396,19 +396,6 @@ def _build_html_context(
     scope_products = len({p.normalized_product_name or p.raw_product_name for p in all_products})
     scope_deployments = len(all_products)
 
-    _risk_order = ["Critical", "High", "Moderate", "Low"]
-    _risk_to_badge = {"Critical": "critical", "High": "high", "Moderate": "medium", "Low": "low"}
-    _risk_raw = Counter(p["risk_level"] for p in all_products_summary)
-    product_risk_pills = [
-        {
-            "label": lvl,
-            "count": _risk_raw[lvl],
-            "badge_class": _risk_to_badge[lvl],
-            "tooltip": f"{_risk_raw[lvl]} deployment{'s' if _risk_raw[lvl] != 1 else ''} with {lvl.lower()} risk exposure",
-        }
-        for lvl in _risk_order if _risk_raw.get(lvl, 0) > 0
-    ]
-
     eol_dates_sorted = sorted(
         p["eol_date"] for p in all_products_summary
         if p["support_status"] == "end_of_life" and p["eol_date"]
@@ -422,6 +409,19 @@ def _build_html_context(
     risk_headline = _build_risk_headline(kev_count, all_products_summary, cspu_count)
     owner_risk_heatmap = _build_owner_risk_heatmap(findings)
     all_products_summary = _enrich_with_host_scores(all_products_summary, owner_risk_heatmap)
+
+    _risk_order = ["Critical", "High", "Moderate", "Low"]
+    _risk_to_badge = {"Critical": "critical", "High": "high", "Moderate": "medium", "Low": "low"}
+    _heatmap_counts = {col["level"]: len(col["owners"]) for col in owner_risk_heatmap["columns"]}
+    product_risk_pills = [
+        {
+            "label": lvl,
+            "count": _heatmap_counts.get(lvl, 0),
+            "badge_class": _risk_to_badge[lvl],
+            "tooltip": f"{_heatmap_counts.get(lvl, 0)} deployment{'s' if _heatmap_counts.get(lvl, 0) != 1 else ''} with {lvl.lower()} risk exposure",
+        }
+        for lvl in _risk_order if _heatmap_counts.get(lvl, 0) > 0
+    ]
 
     return {
         "customer": customer,

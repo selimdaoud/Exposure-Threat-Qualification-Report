@@ -1500,28 +1500,60 @@
       line-height: 1.5;
     }
     /* ── Owner × Risk heatmap ──────────────────────────── */
-    .heatmap-wrapper { overflow-x: auto; margin-top: 10px; display: flex; justify-content: center; }
-    .heatmap-table { border-collapse: collapse; font-size: 12px; width: 560px; table-layout: fixed; outline: 2px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .heatmap-wrapper { overflow-x: auto; margin-top: 10px; }
+    .heatmap-table { border-collapse: collapse; font-size: 12px; width: 100%; table-layout: fixed; outline: 2px solid var(--border); border-radius: 8px; overflow: hidden; }
     .hm-head {
-      width: 140px;
-      padding: 6px 8px 8px;
+      width: 25%;
+      padding: 6px 18px 8px 8px;
       text-align: center;
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: .06em;
       border-bottom: 3px solid transparent;
+      position: relative;
+      user-select: none;
     }
+    .hm-resize-handle {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 5px;
+      cursor: col-resize;
+      background: transparent;
+      z-index: 10;
+    }
+    .hm-resize-handle:hover,
+    .hm-resize-handle.dragging { background: var(--border); }
+    .hm-resize-handle-left {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 5px;
+      cursor: col-resize;
+      background: transparent;
+      z-index: 10;
+    }
+    .hm-resize-handle-left:hover,
+    .hm-resize-handle-left.dragging { background: var(--border); }
     .hm-head--critical { color: var(--critical); border-bottom-color: var(--critical); }
     .hm-head--high     { color: var(--high);     border-bottom-color: var(--high); }
     .hm-head--moderate { color: var(--medium);   border-bottom-color: var(--medium); }
     .hm-head--low      { color: var(--ok);       border-bottom-color: var(--ok); }
     .hm-col-cell {
-      width: 140px;
-      min-height: 140px;
+      width: 25%;
       padding: 8px 6px;
       vertical-align: top;
       border: 1px solid var(--border);
+    }
+    .hm-col-cards {
+      display: flex;
+      flex-wrap: wrap;
+      align-content: flex-start;
+      gap: 4px;
+      min-height: 70px;
     }
     .hm-col-cell--critical { background: rgba(180,35,24,.03); }
     .hm-col-cell--high     { background: rgba(234,88,12,.03); }
@@ -1531,11 +1563,12 @@
     /* card */
     .hm-owner-card {
       position: relative;
-      border-radius: 6px;
-      padding: 14px 8px 8px;
-      margin-bottom: 8px;
+      border-radius: 5px;
+      padding: 10px 6px 5px;
       border: 2px solid transparent;
       text-align: center;
+      flex: 1 1 84px;
+      min-width: 80px;
     }
     .hm-owner-card--critical { background: rgba(180,35,24,.07); border-color: rgba(180,35,24,.30); }
     .hm-owner-card--high     { background: rgba(234,88,12,.07); border-color: rgba(234,88,12,.30); }
@@ -1544,15 +1577,15 @@
     /* badge circle — top right */
     .hm-card-badge {
       position: absolute;
-      top: -9px;
-      right: -9px;
-      width: 18px;
-      height: 18px;
+      top: -6px;
+      right: -6px;
+      width: 13px;
+      height: 13px;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 8px;
+      font-size: 7px;
       font-weight: 700;
       color: #fff;
       border: 2px solid #fff;
@@ -1821,7 +1854,11 @@
             <thead>
               <tr>
                 {% for col in owner_risk_heatmap.columns %}
-                <th class="hm-head hm-head--{{ col.css_level }}">{{ col.level }}</th>
+                <th class="hm-head hm-head--{{ col.css_level }}">
+                  {% if loop.first %}<div class="hm-resize-handle-left" title="Drag to resize column"></div>{% endif %}
+                  {{ col.level }}
+                  <div class="hm-resize-handle" title="Drag to resize column"></div>
+                </th>
                 {% endfor %}
               </tr>
             </thead>
@@ -1830,6 +1867,7 @@
                 {% for col in owner_risk_heatmap.columns %}
                 <td class="hm-col-cell hm-col-cell--{{ col.css_level }}{% if not col.owners %} hm-col-empty{% endif %}">
                   {% if col.owners %}
+                  <div class="hm-col-cards">
                     {% for card in col.owners %}
                     <div class="hm-owner-card hm-owner-card--{{ col.css_level }}">
                       <div class="hm-card-badge" title="Host Risk Score: {{ card.score }} · {{ card.count }} CVE{{ 's' if card.count != 1 else '' }} · score = (priority counts + KEV/CSPU/exploit signals) × tier multiplier">{{ card.score }}</div>
@@ -1848,6 +1886,7 @@
                       </div>
                     </div>
                     {% endfor %}
+                  </div>
                   {% else %}
                   <span class="hm-empty">—</span>
                   {% endif %}
@@ -2321,6 +2360,54 @@
 </main>
 
 <script>
+  // ── Heatmap column resize ──────────────────────────────────────────────
+  (function () {
+    let dragTh = null, startX = 0, startWidths = [], dragSide = 'right';
+
+    function startDrag(handle, th, side, e) {
+      const table = th.closest('table');
+      // Lock all columns to their current pixel widths so resizing one
+      // doesn't cause the others to reflow
+      const ths = Array.from(th.parentElement.querySelectorAll('th'));
+      startWidths = ths.map(t => t.getBoundingClientRect().width);
+      ths.forEach((t, i) => { t.style.width = startWidths[i] + 'px'; });
+      table.style.width = table.getBoundingClientRect().width + 'px';
+      dragTh   = th;
+      dragSide = side;
+      startX   = e.pageX;
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      e.preventDefault();
+    }
+
+    document.querySelectorAll('.hm-resize-handle').forEach(handle => {
+      handle.addEventListener('mousedown', function (e) {
+        startDrag(this, this.closest('th'), 'right', e);
+      });
+    });
+
+    document.querySelectorAll('.hm-resize-handle-left').forEach(handle => {
+      handle.addEventListener('mousedown', function (e) {
+        startDrag(this, this.closest('th'), 'left', e);
+      });
+    });
+
+    document.addEventListener('mousemove', function (e) {
+      if (!dragTh) return;
+      const idx   = Array.from(dragTh.parentElement.children).indexOf(dragTh);
+      const delta = dragSide === 'left' ? -(e.pageX - startX) : (e.pageX - startX);
+      dragTh.style.width = Math.max(90, startWidths[idx] + delta) + 'px';
+    });
+
+    document.addEventListener('mouseup', function () {
+      if (!dragTh) return;
+      const sel = dragSide === 'left' ? '.hm-resize-handle-left' : '.hm-resize-handle';
+      dragTh.querySelector(sel).classList.remove('dragging');
+      dragTh = null;
+      document.body.style.cursor = '';
+    });
+  })();
+
   function toggleScorePopup(badge) {
     const popup = badge.nextElementSibling;
     const isOpen = popup.classList.contains('open');
