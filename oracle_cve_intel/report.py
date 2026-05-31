@@ -585,7 +585,7 @@ def _finding_context(finding: FindingRecord, detection_skipped: bool) -> dict:
         "rules": finding.detection_rules,
         "patches": finding.patch_references,
         "evidence_primary": _primary_references(evidence),
-        "evidence_overflow": _overflow_references(evidence),
+        "evidence_overflow": [],
         "detection_state": detection_state,
         "detection_label": detection_label,
         "patch_lag": _finding_patch_lag(finding),
@@ -1374,10 +1374,6 @@ def _filter_references(references) -> list:
 
 def _primary_references(references) -> list:
     return _filter_references(references)
-
-
-def _overflow_references(_: list) -> list:
-    return []
 
 
 def _reference_rank(reference) -> tuple[int, str]:

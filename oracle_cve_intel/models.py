@@ -32,6 +32,7 @@ class ConfidenceLevel(StringEnum):
 
 
 class Severity(StringEnum):
+    """CVSS-based severity of a CVE — sourced externally from NVD."""
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -40,6 +41,8 @@ class Severity(StringEnum):
 
 
 class Priority(StringEnum):
+    """Pipeline-computed risk priority of a finding — incorporates KEV, EPSS, detection gap, etc.
+    Intentionally separate from Severity: these two scales can diverge as scoring logic evolves."""
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"

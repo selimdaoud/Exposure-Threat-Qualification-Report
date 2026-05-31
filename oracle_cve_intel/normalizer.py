@@ -19,7 +19,7 @@ def normalize(records: list[ProductRecord]) -> list[ProductRecord]:
         else:
             alias_key = _find_alias_key_fuzzy(record.raw_product_name, aliases, cpe_map)
             confidence = ConfidenceLevel.MEDIUM if alias_key else ConfidenceLevel.LOW
-        normalized_name = aliases[alias_key] if alias_key else record.raw_product_name
+        normalized_name = aliases.get(alias_key, alias_key) if alias_key else record.raw_product_name
         cpe_prefix = cpe_map.get(normalized_name)
         if cpe_prefix is None:
             confidence = ConfidenceLevel.LOW
@@ -112,11 +112,6 @@ def _find_alias_key_fuzzy(name: str, aliases: dict[str, str], cpe_map: dict[str,
     if best_score < 0.75 or best_key is None:
         return None
 
-    # If the match is a cpe_map canonical name (not in aliases), fabricate an alias key
-    # by returning it directly — normalize() will look it up in aliases first, then cpe_map
-    # So: if best_key is a cpe_map key not in aliases, add it as an identity alias target
-    if best_key not in aliases and best_key in cpe_map:
-        aliases[best_key] = best_key  # ephemeral identity entry for this run
     return best_key
 
 

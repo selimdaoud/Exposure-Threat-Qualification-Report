@@ -454,19 +454,6 @@ def _should_retry_without_trailing_zero(payload: dict, cpe_name: str) -> bool:
     return True
 
 
-def _all_wildcard_no_ranges(vulnerabilities: list[dict]) -> bool:
-    if not vulnerabilities:
-        return True
-    for item in vulnerabilities:
-        for cfg in item.get("cve", {}).get("configurations", []) or []:
-            for node in cfg.get("nodes", []):
-                for match in node.get("cpeMatch", []):
-                    has_range = any(k in match for k in ("versionStartIncluding", "versionStartExcluding", "versionEndIncluding", "versionEndExcluding"))
-                    if has_range:
-                        return False
-    return True
-
-
 def _closest_versions(target: str, versions: list[str]) -> list[str]:
     target_tuple = _parse_version(target) or (0,)
     def distance(v: str) -> int:

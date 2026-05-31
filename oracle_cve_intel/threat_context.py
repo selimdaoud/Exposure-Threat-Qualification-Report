@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .models import AttackTechniqueRecord, ConfidenceLevel, FindingRecord, ReferenceRecord, ThreatContextRecord
+from .utils import dedupe_refs
 
 
 class RealThreatContextEnricher:
@@ -19,7 +20,7 @@ class RealThreatContextEnricher:
                 exploit_references=exploit_refs,
                 attack_techniques=techniques,
                 confidence=_context_confidence(exploit_refs, finding.cve.kev_status, techniques),
-                references=_dedupe_refs(exploit_refs + _kev_reference(finding.cve.kev_status) + _technique_references(techniques)),
+                references=dedupe_refs(exploit_refs + _kev_reference(finding.cve.kev_status) + _technique_references(techniques)),
             )
             enriched.append(replace(finding, threat_context=context))
         return enriched
@@ -146,14 +147,3 @@ def _technique_references(techniques: list[AttackTechniqueRecord]) -> list[Refer
         for technique in techniques
     ]
 
-
-def _dedupe_refs(references: list[ReferenceRecord]) -> list[ReferenceRecord]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[ReferenceRecord] = []
-    for reference in references:
-        key = (reference.label, reference.url)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(reference)
-    return deduped

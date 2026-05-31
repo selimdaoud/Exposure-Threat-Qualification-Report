@@ -8,6 +8,7 @@ from .config import EPSS_URL, KEV_URL, NVD_BASE_URL
 from .cve_mapper import _cve_from_nvd
 from .models import CVERecord, FindingRecord, ReferenceRecord, Severity
 from .runtime import RunContext
+from .utils import dedupe_refs
 
 
 class RealCVEEnricher:
@@ -38,7 +39,7 @@ class RealCVEEnricher:
                 cve,
                 kev_status=cve.cve_id in kev_ids,
                 epss_score=epss_scores.get(cve.cve_id, cve.epss_score),
-                references=_dedupe_refs(
+                references=dedupe_refs(
                     cve.references
                     + [
                         ReferenceRecord(
@@ -130,7 +131,7 @@ class RealCVEEnricher:
             cvss_vector=cve.cvss_vector or nvd_cve.cvss_vector,
             cwe=cve.cwe or nvd_cve.cwe,
             published_date=cve.published_date or nvd_cve.published_date,
-            references=_dedupe_refs(cve.references + nvd_cve.references),
+            references=dedupe_refs(cve.references + nvd_cve.references),
         )
 
 
@@ -186,14 +187,3 @@ def _needs_nvd_enrichment(cve: CVERecord) -> bool:
         or cve.severity == Severity.INFORMATIONAL
     )
 
-
-def _dedupe_refs(references: list[ReferenceRecord]) -> list[ReferenceRecord]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[ReferenceRecord] = []
-    for reference in references:
-        key = (reference.label, reference.url)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(reference)
-    return deduped
