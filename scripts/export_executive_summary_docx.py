@@ -20,7 +20,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised when dependencies are absent
     raise SystemExit(
         "Missing dependency. Install the exporter requirements with:\n"
-        "  python3 -m pip install beautifulsoup4 python-docx"
+        "  python3 -m pip install beautifulsoup4 python-docx pillow"
     ) from exc
 
 
@@ -344,22 +344,56 @@ def add_summary_points(doc: Document, executive_summary: Tag) -> None:
         doc.add_paragraph(footer)
 
 
-def export_docx(input_path: Path, output_path: Path) -> None:
+def _load_template(template_path: Path) -> Document:
+    import copy
+    from docx.oxml.ns import qn
+    from docx.styles import BabelFish
+    doc = Document(str(template_path))
+    styles_el = doc.styles.element
+    seen: set[str] = set()
+    for style in list(styles_el.findall(qn("w:style"))):
+        sid = style.get(qn("w:styleId"), "")
+        if sid in seen:
+            # python-docx's style lookup breaks on duplicate styleId entries; remove them.
+            styles_el.remove(style)
+            continue
+        seen.add(sid)
+        # Normalize w:name values: python-docx looks up by BabelFish.ui2internal() names
+        # (e.g. "heading 1"), but some templates store the UI name ("Heading 1") instead.
+        name_el = style.find(qn("w:name"))
+        if name_el is not None:
+            current = name_el.get(qn("w:val"), "")
+            normalised = BabelFish.ui2internal(current)
+            if normalised != current:
+                name_el.set(qn("w:val"), normalised)
+    # Merge any styles missing from the template from a default Document so the template
+    # doesn't need to define every built-in style the exporter uses (Table Grid, List Bullet…).
+    # Template styles take precedence; only missing ones are added.
+    default_styles_el = Document().styles.element
+    for default_style in default_styles_el.findall(qn("w:style")):
+        sid = default_style.get(qn("w:styleId"), "")
+        if sid not in seen:
+            styles_el.append(copy.deepcopy(default_style))
+    return doc
+
+
+def export_docx(input_path: Path, output_path: Path, template_path: Path | None = None) -> None:
     soup = BeautifulSoup(input_path.read_text(encoding="utf-8"), "html.parser")
     executive_summary = soup.select_one(".exec-summary")
     if executive_summary is None:
         raise ValueError(f"No executive summary found in {input_path}")
 
-    document = Document()
-    section = document.sections[0]
-    section.orientation = WD_ORIENT.LANDSCAPE
-    section.page_width, section.page_height = section.page_height, section.page_width
-    section.top_margin = Inches(0.55)
-    section.bottom_margin = Inches(0.55)
-    section.left_margin = Inches(0.55)
-    section.right_margin = Inches(0.55)
-    document.styles["Normal"].font.name = "Aptos"
-    document.styles["Normal"].font.size = Pt(9)
+    document = _load_template(template_path) if template_path else Document()
+    if not template_path:
+        section = document.sections[0]
+        section.orientation = WD_ORIENT.LANDSCAPE
+        section.page_width, section.page_height = section.page_height, section.page_width
+        section.top_margin = Inches(0.55)
+        section.bottom_margin = Inches(0.55)
+        section.left_margin = Inches(0.55)
+        section.right_margin = Inches(0.55)
+        document.styles["Normal"].font.name = "Aptos"
+        document.styles["Normal"].font.size = Pt(9)
 
     add_overview(document, soup, executive_summary)
     add_heatmap(document, executive_summary)
@@ -383,6 +417,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="DOCX output path (default: HTML report path with a .docx suffix)",
     )
+    parser.add_argument(
+        "-t",
+        "--template",
+        type=Path,
+        help="Path to a DOCX template file whose styles and page layout will be used",
+    )
     return parser.parse_args(argv)
 
 
@@ -390,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     output_path = args.output or args.html_report.with_suffix(".docx")
     try:
-        export_docx(args.html_report, output_path)
+        export_docx(args.html_report, output_path, template_path=args.template)
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
