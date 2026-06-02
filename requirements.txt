@@ -1,3 +1,6 @@
 gitpython
 jinja2
 pdfplumber     # required by scripts/fetch_oracle_support_dates.py
+beautifulsoup4 # required by scripts/export_executive_summary_docx.py
+python-docx    # required by scripts/export_executive_summary_docx.py
+pillow         # required by scripts/export_executive_summary_docx.py

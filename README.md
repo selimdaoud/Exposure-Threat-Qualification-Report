@@ -223,6 +223,29 @@ python3 -m oracle_cve_intel.cli analyze \
 
 Output files are always created under `REPORT/`.
 
+### Export the executive summary to Word
+
+Generate an editable Word document from an existing HTML report:
+
+```bash
+python3 scripts/export_executive_summary_docx.py REPORT/report.html
+```
+
+The default output is `REPORT/report.docx`. Use `--output` to choose another
+path:
+
+```bash
+python3 scripts/export_executive_summary_docx.py \
+  REPORT/report.html \
+  --output REPORT/executive-summary.docx
+```
+
+The export contains the executive summary, a graphical Risk Exposure Matrix,
+business drivers, host score breakdowns, technical drivers, required actions,
+risk methodology, and summary points. Interactive HTML elements are converted
+to static Word content. Technical drivers include environment CVE counts
+without the complete CVE identifier lists.
+
 ### Flags reference
 
 | Flag | Description |

@@ -1501,7 +1501,7 @@
     }
     /* ── Owner × Risk heatmap ──────────────────────────── */
     .heatmap-wrapper { overflow-x: auto; margin-top: 10px; }
-    .heatmap-table { border-collapse: collapse; font-size: 12px; width: 100%; table-layout: fixed; outline: 2px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .heatmap-table { border-collapse: collapse; font-size: 12px; width: 80vw; min-width: 80vw; max-width: 80vw; margin: 0 auto; table-layout: fixed; outline: 2px solid var(--border); border-radius: 8px; overflow: hidden; }
     .hm-head {
       width: 25%;
       padding: 6px 18px 8px 8px;
@@ -1526,18 +1526,6 @@
     }
     .hm-resize-handle:hover,
     .hm-resize-handle.dragging { background: var(--border); }
-    .hm-resize-handle-left {
-      position: absolute;
-      left: 0;
-      top: 0;
-      bottom: 0;
-      width: 5px;
-      cursor: col-resize;
-      background: transparent;
-      z-index: 10;
-    }
-    .hm-resize-handle-left:hover,
-    .hm-resize-handle-left.dragging { background: var(--border); }
     .hm-head--critical { color: var(--critical); border-bottom-color: var(--critical); }
     .hm-head--high     { color: var(--high);     border-bottom-color: var(--high); }
     .hm-head--moderate { color: var(--medium);   border-bottom-color: var(--medium); }
@@ -1855,9 +1843,8 @@
               <tr>
                 {% for col in owner_risk_heatmap.columns %}
                 <th class="hm-head hm-head--{{ col.css_level }}">
-                  {% if loop.first %}<div class="hm-resize-handle-left" title="Drag to resize column"></div>{% endif %}
                   {{ col.level }}
-                  <div class="hm-resize-handle" title="Drag to resize column"></div>
+                  {% if not loop.last %}<div class="hm-resize-handle" title="Drag to resize columns"></div>{% endif %}
                 </th>
                 {% endfor %}
               </tr>
@@ -2362,19 +2349,18 @@
 <script>
   // ── Heatmap column resize ──────────────────────────────────────────────
   (function () {
-    let dragTh = null, startX = 0, startWidths = [], dragSide = 'right';
+    let dragTh = null, nextTh = null, startX = 0, tableWidth = 0, startWidth = 0, nextStartWidth = 0;
 
-    function startDrag(handle, th, side, e) {
-      const table = th.closest('table');
-      // Lock all columns to their current pixel widths so resizing one
-      // doesn't cause the others to reflow
+    function startDrag(handle, th, e) {
       const ths = Array.from(th.parentElement.querySelectorAll('th'));
-      startWidths = ths.map(t => t.getBoundingClientRect().width);
-      ths.forEach((t, i) => { t.style.width = startWidths[i] + 'px'; });
-      table.style.width = table.getBoundingClientRect().width + 'px';
+      const widths = ths.map(t => t.getBoundingClientRect().width);
+      tableWidth = th.closest('table').getBoundingClientRect().width;
+      ths.forEach((t, i) => { t.style.width = widths[i] / tableWidth * 100 + '%'; });
       dragTh   = th;
-      dragSide = side;
+      nextTh   = th.nextElementSibling;
       startX   = e.pageX;
+      startWidth = th.getBoundingClientRect().width;
+      nextStartWidth = nextTh.getBoundingClientRect().width;
       handle.classList.add('dragging');
       document.body.style.cursor = 'col-resize';
       e.preventDefault();
@@ -2382,28 +2368,22 @@
 
     document.querySelectorAll('.hm-resize-handle').forEach(handle => {
       handle.addEventListener('mousedown', function (e) {
-        startDrag(this, this.closest('th'), 'right', e);
-      });
-    });
-
-    document.querySelectorAll('.hm-resize-handle-left').forEach(handle => {
-      handle.addEventListener('mousedown', function (e) {
-        startDrag(this, this.closest('th'), 'left', e);
+        startDrag(this, this.closest('th'), e);
       });
     });
 
     document.addEventListener('mousemove', function (e) {
       if (!dragTh) return;
-      const idx   = Array.from(dragTh.parentElement.children).indexOf(dragTh);
-      const delta = dragSide === 'left' ? -(e.pageX - startX) : (e.pageX - startX);
-      dragTh.style.width = Math.max(90, startWidths[idx] + delta) + 'px';
+      const delta = Math.max(90 - startWidth, Math.min(e.pageX - startX, nextStartWidth - 90));
+      dragTh.style.width = (startWidth + delta) / tableWidth * 100 + '%';
+      nextTh.style.width = (nextStartWidth - delta) / tableWidth * 100 + '%';
     });
 
     document.addEventListener('mouseup', function () {
       if (!dragTh) return;
-      const sel = dragSide === 'left' ? '.hm-resize-handle-left' : '.hm-resize-handle';
-      dragTh.querySelector(sel).classList.remove('dragging');
+      dragTh.querySelector('.hm-resize-handle').classList.remove('dragging');
       dragTh = null;
+      nextTh = null;
       document.body.style.cursor = '';
     });
   })();
