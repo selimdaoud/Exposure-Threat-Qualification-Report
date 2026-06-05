@@ -167,6 +167,31 @@ class MockCVEEnricher:
         return enriched
 
 
+def fetch_cve_record(
+    cve_id: str,
+    api_client: ApiClient,
+    cache: CacheManager,
+    run_ctx: RunContext,
+) -> CVERecord | None:
+    """Fetch a single CVE from NVD by ID. Returns None if not found or unavailable."""
+    cache_key = f"cve_{cve_id}"
+    payload = cache.get("nvd", cache_key)
+    if payload and not cache.is_stale("nvd", cache_key):
+        run_ctx.progress("nvd", f"Cache hit for {cve_id}.")
+    else:
+        try:
+            payload = api_client.get(NVD_BASE_URL, {"cveId": cve_id}, "nvd")
+            cache.set("nvd", cache_key, payload)
+        except SourceError as exc:
+            run_ctx.add_warning("nvd", f"NVD unavailable: {exc}")
+            if not payload:
+                return None
+    vulnerabilities = (payload or {}).get("vulnerabilities", [])
+    if not vulnerabilities:
+        return None
+    return _cve_from_nvd(vulnerabilities[0].get("cve", {}))
+
+
 def _score_for(severity: Severity) -> tuple[float | None, str | None]:
     if severity == Severity.CRITICAL:
         return 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"

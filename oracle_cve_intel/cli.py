@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
+import sqlite3
 import sys
 from pathlib import Path
 
 from .alias_enricher import AliasEnricher
 from .api_client import ApiClient
 from .cache_manager import CacheManager
-from .cve_enrichment import MockCVEEnricher, RealCVEEnricher
+from .cve_enrichment import MockCVEEnricher, RealCVEEnricher, fetch_cve_record
 from .cve_mapper import MockCVEMapper, NvdCVEMapper
 from .detection_mapper import DetectionDbMapper, DetectionIndexBuilder, MockDetectionMapper
 from .input_parser import InputParserError, read_csv
-from .models import AffectedStatus, FindingRecord, Severity
+from .models import AffectedStatus, CVERecord, FindingRecord, Severity
 from .normalizer import normalize
+from .oracle_patch_resolver import OraclePatchResolver
 from .prioritizer import prioritize
 from .support_checker import check_support
 from .report import write_html, write_json
@@ -34,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "analyze":
         return analyze(args)
+    if args.command == "lookup-cve":
+        return lookup_cve(args)
     if args.command == "detection-index":
         return detection_index(args)
     if args.command == "update-aliases":
@@ -158,9 +164,136 @@ def detection_index(args: argparse.Namespace) -> int:
         return 2
 
 
+def lookup_cve(args: argparse.Namespace) -> int:
+    cve_id = args.cve.strip().upper()
+    if not re.fullmatch(r"CVE-\d{4}-\d{1,7}", cve_id):
+        progress("input", f"ERROR - '{args.cve}' is not a valid CVE ID (expected CVE-YYYY-NNNN).")
+        return 1
+
+    cache = CacheManager(args.cache)
+    api_client = ApiClient(offline=args.offline)
+    run_ctx = RunContext(progress_callback=progress)
+
+    try:
+        # NVD
+        progress("nvd", f"Fetching NVD data for {cve_id} ...")
+        cve_record = fetch_cve_record(cve_id, api_client, cache, run_ctx)
+        if cve_record:
+            score_str = str(cve_record.cvss_score) if cve_record.cvss_score is not None else "N/A"
+            progress("nvd", f"Severity: {cve_record.severity.value.upper()}  CVSS: {score_str}  Published: {cve_record.published_date or 'N/A'}")
+            if cve_record.cwe:
+                progress("nvd", f"CWE: {cve_record.cwe}")
+            if cve_record.description:
+                desc = cve_record.description[:300] + ("..." if len(cve_record.description) > 300 else "")
+                progress("nvd", f"Description: {desc}")
+        else:
+            progress("nvd", f"WARNING - {cve_id} not found in NVD or NVD unavailable.")
+
+        # KEV / EPSS
+        kev: bool | None = None
+        epss: float | None = None
+        if not args.offline:
+            enricher = RealCVEEnricher(api_client, cache, run_ctx)
+            kev_ids = enricher._kev_ids()
+            epss_map = enricher._epss_scores([cve_id])
+            kev = cve_id in kev_ids
+            epss = epss_map.get(cve_id)
+            progress("enrich", f"KEV: {'YES — in CISA Known Exploited Vulnerabilities catalog' if kev else 'No'}")
+            epss_str = f"{epss:.4f} ({epss * 100:.2f}% exploitation probability)" if epss is not None else "N/A"
+            progress("enrich", f"EPSS: {epss_str}")
+
+        # Oracle advisory scan
+        progress("cpu", f"Scanning Oracle CPU/CSPU advisories for {cve_id} ...")
+        resolver = OraclePatchResolver(api_client, cache, run_ctx)
+        advisory_hits = resolver.find_cve_in_advisories(cve_id)
+        unique_advisory_count = len({h["advisory_url"] for h in advisory_hits})
+        if advisory_hits:
+            progress("cpu", f"Found {len(advisory_hits)} entry/entries across {unique_advisory_count} Oracle advisory/ies:")
+            for hit in advisory_hits:
+                product = hit.get("product") or "Unknown Product"
+                component = hit.get("component")
+                versions = hit.get("versions")
+                title = hit.get("advisory_title") or hit["advisory_url"]
+                detail = product
+                if component:
+                    detail += f" / {component}"
+                if versions:
+                    detail += f"  [{versions}]"
+                progress("cpu", f"  {title}: {detail}")
+        else:
+            progress("cpu", "Not found in any scanned Oracle advisory.")
+
+        # Detection rules
+        db_path = cache.detection_db_path()
+        rules: list[dict] = []
+        if db_path.exists():
+            rules = _detection_rules_for_cve(cve_id, db_path)
+            if rules:
+                progress("detect", f"Found {len(rules)} detection rule(s):")
+                for rule in rules[:10]:
+                    progress("detect", f"  [{rule['source']}] {rule['rule_name']} ({rule['rule_type']}) — {rule['url']}")
+                if len(rules) > 10:
+                    progress("detect", f"  ... and {len(rules) - 10} more (see --json output for full list).")
+            else:
+                progress("detect", "No detection rules found for this CVE in the local DB.")
+        else:
+            progress("detect", "Detection DB not found. Run `detection-index --refresh` first.")
+
+        # JSON output
+        if args.json:
+            result: dict = {
+                "cve_id": cve_id,
+                "nvd": _cve_to_dict(cve_record) if cve_record else None,
+                "kev": kev,
+                "epss": epss,
+                "oracle_advisories": advisory_hits,
+                "detection_rules": rules,
+            }
+            json_path = _report_path(args.json)
+            json_path.write_text(json.dumps(result, indent=2))
+            progress("report", f"JSON written to {json_path}")
+
+        progress("done", f"CVE lookup complete for {cve_id}.")
+        return 0
+
+    except Exception as exc:
+        progress("lookup-cve", f"ERROR - {exc}")
+        return 2
+
+
 def progress(stage: str, message: str, level: str = "info") -> None:
     del level
     print(f"[{stage:<10}] {message}")
+
+
+def _detection_rules_for_cve(cve_id: str, db_path: Path) -> list[dict]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT rules.rule_id, rules.rule_name, rules.rule_type,
+                   rules.source, rules.url, rules.telemetry
+            FROM rules
+            JOIN rule_keys ON rule_keys.rule_id = rules.rule_id
+            WHERE rule_keys.key = ?
+            ORDER BY rules.source, rules.rule_name
+            """,
+            (cve_id.upper(),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def _cve_to_dict(cve: CVERecord) -> dict:
+    return {
+        "cve_id": cve.cve_id,
+        "description": cve.description,
+        "severity": cve.severity.value,
+        "cvss_score": cve.cvss_score,
+        "cvss_vector": cve.cvss_vector,
+        "cwe": cve.cwe,
+        "published_date": cve.published_date,
+        "references": [{"label": r.label, "url": r.url, "source": r.source} for r in cve.references],
+    }
 
 
 def _filter_by_severity(findings: list[FindingRecord], minimum: str) -> list[FindingRecord]:
@@ -221,6 +354,12 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--min-severity", choices=["low", "medium", "high", "critical"], default="low")
     analyze_parser.add_argument("--include-unconfirmed", action="store_true")
     analyze_parser.add_argument("--customer", default="UNKNOWN_ORG", metavar="ORGANISATION")
+
+    lookup_cve_parser = subparsers.add_parser("lookup-cve", help="Look up a CVE across Oracle advisories, NVD, and the local detection DB")
+    lookup_cve_parser.add_argument("--cve", required=True, metavar="CVE-ID", help="CVE identifier, e.g. CVE-2024-12345")
+    lookup_cve_parser.add_argument("--cache", default="data/cache")
+    lookup_cve_parser.add_argument("--offline", action="store_true", help="Use cached data only; skip live KEV/EPSS/NVD calls")
+    lookup_cve_parser.add_argument("--json", metavar="FILE", help="Write full results to a JSON file")
 
     index_parser = subparsers.add_parser("detection-index", help="Fetch detection rules and build the local lookup DB")
     index_parser.add_argument("--cache", default="data/cache")

@@ -148,17 +148,15 @@ The CSV file must contain the following mandatory columns.
 |---|---|
 | `product_name` | Oracle product name (e.g. `Oracle WebLogic Server`) |
 | `version` | Installed version (e.g. `12.2.1.4`, `19.3`, `8u351`) |
-| `host` | Host identifier (e.g. `web001`, `db-prod-01`) |
-| `notes` | Free-text note (e.g. `Internet-facing`, `core database`) |
 
 **Optional columns:**
 
 | Column | Description |
 |---|---|
+| `host` | Host identifier (e.g. `web001`, `db-prod-01`). Auto-generated as `host_001`, `host_002`, … if absent. `machine_id` is accepted as a fallback column name. |
+| `notes` | Free-text note (e.g. `Internet-facing`, `core database`) |
 | `owner` | Responsible owner or team — used in the Risk Exposure Matrix |
 | `tier` | Business criticality tier: `0` Mission Critical · `1` Critical · `2` Important · `3` Standard |
-
-> **Backward compatibility:** `machine_id` is accepted as a fallback if `host` is absent.
 
 **Minimal example:**
 
@@ -668,10 +666,10 @@ score   = round((base + signals) × tier_multiplier)
 
 | Score | Column |
 |---|---|
-| ≥ 60 | Critical |
-| ≥ 20 | High |
-| ≥ 5 | Moderate |
-| < 5 | Low |
+| ≥ 70 | Critical |
+| ≥ 40 | High |
+| ≥ 10 | Moderate |
+| < 10 | Low |
 
 #### Rationale
 
@@ -804,9 +802,7 @@ python3 -m oracle_cve_intel.cli detection-index --refresh --rebuild
 
 **Analysis is slow**
 
-The first run scans up to 38 Oracle CPU advisories (2017–present) for products
-with generic CPEs. These pages are then cached — subsequent runs are fast. For
-a quick run without advisory scanning:
+The first run scans all Oracle CPU advisories (quarterly, from 2017) and CSPU advisories (monthly, from 2026) for products with generic CPEs — currently around 40+ pages. These pages are then cached — subsequent runs are fast. For a quick run without advisory scanning:
 
 ```bash
 python3 -m oracle_cve_intel.cli analyze \
@@ -856,7 +852,5 @@ migrate to a supported release if applicable.
 
 **A CSV column is not recognized**
 
-Only `product_name`, `version`, `machine_id`, and `notes` are mandatory. The
-columns `owner` and `tier` are optional. Any other column is silently ignored.
-The `environment` and `criticality` columns are not supported — use `notes` for
-environment information and `tier` (0–3) for business criticality.
+Only `product_name` and `version` are required. All other columns (`host`, `machine_id`, `notes`, `owner`, `tier`) are optional and silently ignored if absent.
+The `criticality` column is not supported — use `tier` (0–3) for business criticality.
