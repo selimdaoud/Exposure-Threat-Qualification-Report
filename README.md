@@ -21,6 +21,7 @@ patch references, and evidence references.
 - [Product Name Normalization](#product-name-normalization)
 - [Oracle Advisory Scan (CPU + CSPU)](#oracle-advisory-scan-cpu--cspu)
 - [Local Detection Rule Index](#local-detection-rule-index)
+- [Oracle Support Dates](#oracle-support-dates)
 - [Analysis Modes](#analysis-modes)
 - [Analysis Pipeline](#analysis-pipeline)
 - [HTML Report](#html-report)
@@ -413,6 +414,40 @@ displays:
 
 ---
 
+## Oracle Support Dates
+
+The engine determines product lifecycle status (Supported / Extended Support / End of Life) from two sources: the endoflife.date API and a local file `data/oracle_support_dates.json`. The local file is the authoritative fallback for products not tracked by endoflife.date and for offline runs.
+
+To refresh it, run from `v1/`:
+
+```bash
+python3 scripts/fetch_oracle_support_dates.py
+```
+
+This downloads and parses four Oracle Lifetime Support PDFs (Technology, Middleware, Applications, OS) directly from `oracle.com` and writes the extracted dates to `data/oracle_support_dates.json`.
+
+**Flags:**
+
+| Flag | Effect |
+|---|---|
+| *(none)* | Use locally cached PDFs if already downloaded, otherwise fetch |
+| `--force` | Re-download all PDFs even if cached |
+| `--dry-run` | Print the extracted JSON without writing — useful to review before overwriting |
+
+**Example:**
+
+```bash
+# Preview what would be written
+python3 scripts/fetch_oracle_support_dates.py --dry-run
+
+# Force re-download and update
+python3 scripts/fetch_oracle_support_dates.py --force
+```
+
+Oracle updates these PDFs a few times a year when product support milestones change. Running this script quarterly, or whenever a product shows an unexpected `UNKNOWN` support status, is sufficient.
+
+---
+
 ## Analysis Modes
 
 ### With detection (default)
@@ -754,17 +789,20 @@ finding.
 # 1. Enrich the product catalog (once, then periodically)
 python3 -m oracle_cve_intel.cli update-aliases
 
-# 2. Update the detection index periodically
+# 2. Refresh Oracle support dates (once, then quarterly or when a product shows UNKNOWN)
+python3 scripts/fetch_oracle_support_dates.py
+
+# 3. Update the detection index periodically
 python3 -m oracle_cve_intel.cli detection-index --refresh --rebuild
 
-# 3. Run the standard analysis
+# 4. Run the standard analysis
 python3 -m oracle_cve_intel.cli analyze \
   --input your_products.csv \
   --customer "Organisation Name" \
   --json findings.json \
   --html report.html
 
-# 4. Open REPORT/report.html and prioritize:
+# 5. Open REPORT/report.html and prioritize:
 #    Critical > KEV = true > Public exploit > High EPSS
 #    > Production / internet-facing / high-criticality assets
 ```
