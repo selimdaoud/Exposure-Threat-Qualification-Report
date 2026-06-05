@@ -210,6 +210,42 @@ class OraclePatchResolver:
                 confirmed.add(row["cve_id"])
         return confirmed
 
+    def find_cves_in_advisories(self, cve_ids: list[str]) -> dict[str, list[dict]]:
+        """Scan Oracle advisories for multiple CVE IDs in a single pass.
+
+        Scans from the earliest year present in any of the given CVE IDs.
+        Returns a dict mapping each CVE ID to its list of advisory hits.
+        Each hit contains: advisory_url, advisory_title, product, component,
+        versions, section_id.
+        """
+        if not cve_ids:
+            return {}
+        cve_set = set(cve_ids)
+        years = [
+            int(m.group(1))
+            for cve_id in cve_set
+            if (m := re.match(r"CVE-(\d{4})-", cve_id, re.IGNORECASE))
+        ]
+        min_year = min(years) if years else 2017
+        hits: dict[str, list[dict]] = {cve_id: [] for cve_id in cve_set}
+        urls = self._recent_advisory_urls_from_index(min_year=min_year)
+        total = len(urls)
+        self.run_ctx.progress("cpu", f"Will scan {total} Oracle advisories (from {min_year}) for {len(cve_ids)} CVE(s).")
+        for index, url in enumerate(urls, 1):
+            self.run_ctx.progress("cpu", f"[{index}/{total}] {_title_from_url(url)} ...")
+            for row in self._risk_matrix_rows(url):
+                row_cve = row.get("cve_id")
+                if row_cve in cve_set:
+                    hits[row_cve].append({
+                        "advisory_url": url,
+                        "advisory_title": _title_from_url(url),
+                        "product": row.get("product"),
+                        "component": row.get("component"),
+                        "versions": row.get("versions"),
+                        "section_id": row.get("section_id"),
+                    })
+        return hits
+
     def find_cve_in_advisories(self, cve_id: str) -> list[dict]:
         """Scan Oracle CPU/CSPU advisories for risk-matrix rows matching `cve_id`.
 

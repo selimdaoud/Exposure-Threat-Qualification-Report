@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import sqlite3
 import sys
+import textwrap
 from pathlib import Path
 
 from .alias_enricher import AliasEnricher
@@ -165,9 +167,15 @@ def detection_index(args: argparse.Namespace) -> int:
 
 
 def lookup_cve(args: argparse.Namespace) -> int:
-    cve_id = args.cve.strip().upper()
-    if not re.fullmatch(r"CVE-\d{4}-\d{1,7}", cve_id):
-        progress("input", f"ERROR - '{args.cve}' is not a valid CVE ID (expected CVE-YYYY-NNNN).")
+    raw_ids = [c.strip().upper() for c in args.cve.split(",") if c.strip()]
+    cve_ids: list[str] = []
+    for cve_id in raw_ids:
+        if not re.fullmatch(r"CVE-\d{4}-\d{1,7}", cve_id):
+            progress("input", f"ERROR - '{cve_id}' is not a valid CVE ID (expected CVE-YYYY-NNNN).")
+            return 1
+        cve_ids.append(cve_id)
+    if not cve_ids:
+        progress("input", "ERROR - no CVE IDs provided.")
         return 1
 
     cache = CacheManager(args.cache)
@@ -175,85 +183,70 @@ def lookup_cve(args: argparse.Namespace) -> int:
     run_ctx = RunContext(progress_callback=progress)
 
     try:
-        # NVD
-        progress("nvd", f"Fetching NVD data for {cve_id} ...")
-        cve_record = fetch_cve_record(cve_id, api_client, cache, run_ctx)
-        if cve_record:
-            score_str = str(cve_record.cvss_score) if cve_record.cvss_score is not None else "N/A"
-            progress("nvd", f"Severity: {cve_record.severity.value.upper()}  CVSS: {score_str}  Published: {cve_record.published_date or 'N/A'}")
-            if cve_record.cwe:
-                progress("nvd", f"CWE: {cve_record.cwe}")
-            if cve_record.description:
-                desc = cve_record.description[:300] + ("..." if len(cve_record.description) > 300 else "")
-                progress("nvd", f"Description: {desc}")
-        else:
-            progress("nvd", f"WARNING - {cve_id} not found in NVD or NVD unavailable.")
-
-        # KEV / EPSS
-        kev: bool | None = None
-        epss: float | None = None
+        # KEV + EPSS — fetched once for all CVEs
+        kev_ids: set[str] = set()
+        epss_map: dict[str, float] = {}
         if not args.offline:
             enricher = RealCVEEnricher(api_client, cache, run_ctx)
+            progress("enrich", "Fetching KEV catalog and EPSS scores ...")
             kev_ids = enricher._kev_ids()
-            epss_map = enricher._epss_scores([cve_id])
-            kev = cve_id in kev_ids
-            epss = epss_map.get(cve_id)
-            progress("enrich", f"KEV: {'YES — in CISA Known Exploited Vulnerabilities catalog' if kev else 'No'}")
-            epss_str = f"{epss:.4f} ({epss * 100:.2f}% exploitation probability)" if epss is not None else "N/A"
-            progress("enrich", f"EPSS: {epss_str}")
+            epss_map = enricher._epss_scores(cve_ids)
 
-        # Oracle advisory scan
-        progress("cpu", f"Scanning Oracle CPU/CSPU advisories for {cve_id} ...")
+        # NVD — one call per CVE
+        progress("nvd", f"Fetching NVD data for {len(cve_ids)} CVE(s) ...")
+        cve_records = {cve_id: fetch_cve_record(cve_id, api_client, cache, run_ctx) for cve_id in cve_ids}
+
+        # Oracle advisory scan — single pass over all advisories for all CVEs
+        progress("cpu", f"Scanning Oracle CPU/CSPU advisories for {len(cve_ids)} CVE(s) ...")
         resolver = OraclePatchResolver(api_client, cache, run_ctx)
-        advisory_hits = resolver.find_cve_in_advisories(cve_id)
-        unique_advisory_count = len({h["advisory_url"] for h in advisory_hits})
-        if advisory_hits:
-            progress("cpu", f"Found {len(advisory_hits)} entry/entries across {unique_advisory_count} Oracle advisory/ies:")
-            for hit in advisory_hits:
-                product = hit.get("product") or "Unknown Product"
-                component = hit.get("component")
-                versions = hit.get("versions")
-                title = hit.get("advisory_title") or hit["advisory_url"]
-                detail = product
-                if component:
-                    detail += f" / {component}"
-                if versions:
-                    detail += f"  [{versions}]"
-                progress("cpu", f"  {title}: {detail}")
-        else:
-            progress("cpu", "Not found in any scanned Oracle advisory.")
+        all_advisory_hits = resolver.find_cves_in_advisories(cve_ids)
 
-        # Detection rules
+        # Detection rules — one DB query per CVE
         db_path = cache.detection_db_path()
-        rules: list[dict] = []
-        if db_path.exists():
-            rules = _detection_rules_for_cve(cve_id, db_path)
-            if rules:
-                progress("detect", f"Found {len(rules)} detection rule(s):")
-                for rule in rules[:10]:
-                    progress("detect", f"  [{rule['source']}] {rule['rule_name']} ({rule['rule_type']}) — {rule['url']}")
-                if len(rules) > 10:
-                    progress("detect", f"  ... and {len(rules) - 10} more (see --json output for full list).")
-            else:
-                progress("detect", "No detection rules found for this CVE in the local DB.")
-        else:
+        detection_db_exists = db_path.exists()
+        if not detection_db_exists:
             progress("detect", "Detection DB not found. Run `detection-index --refresh` first.")
+        all_rules = {
+            cve_id: (_detection_rules_for_cve(cve_id, db_path) if detection_db_exists else [])
+            for cve_id in cve_ids
+        }
+
+        # Assemble per-CVE result dicts
+        results = [
+            {
+                "cve_id": cve_id,
+                "cve_record": cve_records.get(cve_id),
+                "kev": cve_id in kev_ids,
+                "epss": epss_map.get(cve_id),
+                "advisory_hits": all_advisory_hits.get(cve_id, []),
+                "detection_rules": all_rules.get(cve_id, []),
+            }
+            for cve_id in cve_ids
+        ]
+
+        # Print the formatted report
+        _print_cve_report(results, detection_db_exists)
 
         # JSON output
         if args.json:
-            result: dict = {
-                "cve_id": cve_id,
-                "nvd": _cve_to_dict(cve_record) if cve_record else None,
-                "kev": kev,
-                "epss": epss,
-                "oracle_advisories": advisory_hits,
-                "detection_rules": rules,
+            output: dict = {
+                "cve_ids": cve_ids,
+                "results": [
+                    {
+                        "cve_id": r["cve_id"],
+                        "nvd": _cve_to_dict(r["cve_record"]) if r["cve_record"] else None,
+                        "kev": r["kev"],
+                        "epss": r["epss"],
+                        "oracle_advisories": r["advisory_hits"],
+                        "detection_rules": r["detection_rules"],
+                    }
+                    for r in results
+                ],
             }
             json_path = _report_path(args.json)
-            json_path.write_text(json.dumps(result, indent=2))
+            json_path.write_text(json.dumps(output, indent=2))
             progress("report", f"JSON written to {json_path}")
 
-        progress("done", f"CVE lookup complete for {cve_id}.")
         return 0
 
     except Exception as exc:
@@ -264,6 +257,129 @@ def lookup_cve(args: argparse.Namespace) -> int:
 def progress(stage: str, message: str, level: str = "info") -> None:
     del level
     print(f"[{stage:<10}] {message}")
+
+
+_REPORT_WIDTH = 72
+
+
+def _print_cve_report(results: list[dict], detection_db_exists: bool) -> None:
+    heavy = "═" * _REPORT_WIDTH
+    light = "─" * _REPORT_WIDTH
+    today = datetime.date.today().isoformat()
+    count = len(results)
+    label = f"CVE LOOKUP — {count} CVE{'s' if count != 1 else ''}"
+
+    print()
+    print(heavy)
+    print(f"  {label}{today:>{_REPORT_WIDTH - len(label) - 2}}")
+    print(heavy)
+
+    for result in results:
+        cve_id = result["cve_id"]
+        cve = result["cve_record"]
+        kev = result["kev"]
+        epss = result["epss"]
+        advisory_hits = result["advisory_hits"]
+        rules = result["detection_rules"]
+
+        print()
+        severity_str = cve.severity.value.upper() if cve else "UNKNOWN"
+        id_label = f"  {cve_id}"
+        print(f"{id_label}{severity_str:>{_REPORT_WIDTH - len(id_label)}}")
+        print("  " + light[: _REPORT_WIDTH - 2])
+
+        if cve:
+            meta: list[str] = []
+            if cve.cvss_score is not None:
+                meta.append(f"CVSS {cve.cvss_score}")
+            if cve.published_date:
+                meta.append(f"Published {cve.published_date}")
+            if cve.cwe:
+                meta.append(cve.cwe)
+            if meta:
+                print(f"  {' · '.join(meta)}")
+        else:
+            print("  Not found in NVD.")
+
+        kev_str = "YES" if kev else "No"
+        epss_str = f"{epss:.4f} ({epss * 100:.1f}%)" if epss is not None else "N/A"
+        print(f"  KEV: {kev_str}  ·  EPSS: {epss_str}")
+
+        if cve and cve.description:
+            print()
+            _print_wrapped(cve.description, indent=2, width=_REPORT_WIDTH)
+
+        # Oracle advisories
+        print()
+        unique_count = len({h["advisory_url"] for h in advisory_hits})
+        if advisory_hits:
+            noun = "entry" if len(advisory_hits) == 1 else "entries"
+            adv_noun = "advisory" if unique_count == 1 else "advisories"
+            print(f"  Oracle Advisories  {len(advisory_hits)} {noun} in {unique_count} {adv_noun}:")
+            for hit in advisory_hits:
+                product = hit.get("product") or "Unknown Product"
+                component = hit.get("component")
+                versions = hit.get("versions")
+                title = hit.get("advisory_title") or hit["advisory_url"]
+                print(f"    ► {title}")
+                detail = f"      {product}"
+                if component:
+                    detail += f" / {component}"
+                if versions:
+                    detail += f"  [{versions}]"
+                print(detail)
+        else:
+            print("  Oracle Advisories  Not found in any scanned advisory.")
+
+        # Detection rules
+        print()
+        if not detection_db_exists:
+            print("  Detection Rules  DB not found — run `detection-index --refresh` first.")
+        elif rules:
+            rule_noun = "rule" if len(rules) == 1 else "rules"
+            print(f"  Detection Rules  {len(rules)} {rule_noun} found:")
+            for rule in rules[:10]:
+                print(f"    ► [{rule['source']}]  {rule['rule_name']}  ({rule['rule_type']})")
+            if len(rules) > 10:
+                print(f"    … and {len(rules) - 10} more  (use --json for full list)")
+        else:
+            print("  Detection Rules  No rules found for this CVE.")
+
+        print()
+        print(heavy)
+
+    # Summary
+    sev_counts: dict[str, int] = {}
+    for r in results:
+        sev = r["cve_record"].severity.value if r["cve_record"] else "informational"
+        sev_counts[sev] = sev_counts.get(sev, 0) + 1
+
+    sev_parts = [
+        f"{sev_counts[s]} {s.capitalize()}"
+        for s in ("critical", "high", "medium", "low", "informational")
+        if sev_counts.get(s)
+    ]
+    kev_count = sum(1 for r in results if r["kev"])
+    epss_high = sum(1 for r in results if r["epss"] is not None and r["epss"] >= 0.5)
+    in_advisory = sum(1 for r in results if r["advisory_hits"])
+    gap_count = sum(1 for r in results if not r["detection_rules"])
+
+    print()
+    noun = "CVE" if count == 1 else "CVEs"
+    print(f"  SUMMARY  {count} {noun}  ·  {' · '.join(sev_parts)}")
+    print(f"  {light[: _REPORT_WIDTH - 2]}")
+    print(f"  KEV listed:          {kev_count}")
+    print(f"  EPSS ≥ 0.5:          {epss_high}")
+    print(f"  In Oracle advisory:  {in_advisory} of {count}")
+    print(f"  Detection gap:       {gap_count} of {count}")
+    print(heavy)
+    print()
+
+
+def _print_wrapped(text: str, indent: int, width: int) -> None:
+    prefix = " " * indent
+    for line in textwrap.wrap(text, width=width - indent):
+        print(prefix + line)
 
 
 def _detection_rules_for_cve(cve_id: str, db_path: Path) -> list[dict]:
